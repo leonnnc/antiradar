@@ -1,0 +1,2645 @@
+#include <Arduino.h>
+#include <FS.h>
+#include <RF24.h>
+#include <SD.h>
+#include <SPI.h>
+#include <TFT_eSPI.h>
+#include <TinyGPSPlus.h>
+#include <BLEDevice.h>
+#include <BLEHIDDevice.h>
+#include <BLESecurity.h>
+#include <esp_bt.h>
+#include "USB.h"
+#include "USBHIDConsumerControl.h"
+#include "USBHIDKeyboard.h"
+#include <math.h>
+
+#include "AppInput.h"
+#include "CyberdeckPins.h"
+
+namespace {
+
+constexpr int SCREEN_W = 320;
+constexpr int SCREEN_H = 240;
+constexpr uint8_t FRAME_COLOR_DEPTH = 8;
+constexpr uint16_t COL_BG = TFT_BLACK;
+constexpr uint16_t COL_PANEL = 0x0208;
+constexpr uint16_t COL_PANEL_2 = 0x09A6;
+constexpr uint16_t COL_GRID = 0x19E7;
+constexpr uint16_t COL_GREEN = 0x07E0;
+constexpr uint16_t COL_CYAN = 0x07FF;
+constexpr uint16_t COL_AMBER = 0xFD20;
+constexpr uint16_t COL_RED = 0xF800;
+constexpr uint16_t COL_MUTED = 0x8410;
+constexpr uint16_t COL_TEXT = TFT_WHITE;
+
+TFT_eSPI tft;
+TFT_eSprite frame(&tft);
+HardwareSerial gpsSerial(1);
+TinyGPSPlus gps;
+SPIClass sdSPI(HSPI);
+RF24 radio1(CD_NRF1_CE, CD_NRF1_CSN);
+RF24 radio2(CD_NRF2_CE, CD_NRF2_CSN);
+USBHIDKeyboard HidKeyboard;
+USBHIDConsumerControl HidConsumer;
+BLEServer* bleRemoteServer = nullptr;
+BLEHIDDevice* bleRemoteHid = nullptr;
+BLECharacteristic* bleRemoteKeyboardInput = nullptr;
+BLECharacteristic* bleRemoteMediaInput = nullptr;
+BLESecurity* bleRemoteSecurity = nullptr;
+
+bool frameReady = false;
+bool sdReady = false;
+bool sdTried = false;
+bool radio1Ready = false;
+bool radio2Ready = false;
+bool radiosTried = false;
+bool gpsPortReady = false;
+bool radioScanArmed = false;
+bool hidReady = false;
+bool bleRemoteReady = false;
+bool bleRemoteConnected = false;
+uint32_t gpsLastChars = 0;
+uint32_t gpsLastCharMs = 0;
+uint32_t gpsLastUiMs = 0;
+uint32_t gpsStatsLastMs = 0;
+uint32_t gpsStatsLastChars = 0;
+uint16_t gpsCharsPerSec = 0;
+uint32_t sdMountHz = 0;
+uint32_t lastRenderMs = 0;
+uint32_t lastSensorMs = 0;
+uint32_t lastRadioMs = 0;
+uint32_t radioScanTicks = 0;
+uint32_t bootMs = 0;
+float batteryVolts = 0.0f;
+int batteryPct = 0;
+uint16_t radioBars[80] = {};
+uint8_t radioScanChannel = 0;
+char statusLine[48] = "Ready";
+
+enum class Screen : uint8_t {
+    Home,
+    SystemPulse,
+    GpsRadar,
+    SdVault,
+    RadioScope,
+    PasscodeSim,
+    HidDemo,
+    IphoneRemote,
+    Battery,
+    About
+};
+
+struct MenuEntry {
+    const char* title;
+    const char* subtitle;
+    Screen screen;
+};
+
+const MenuEntry MENU[] = {
+    {"SYSTEM PULSE", "Hardware live dashboard", Screen::SystemPulse},
+    {"GPS RADAR", "Ubicacion real, altitud y lugar", Screen::GpsRadar},
+    {"SD VAULT", "microSD status and test write", Screen::SdVault},
+    {"RADIO SCOPE", "Passive nRF24 2.4 GHz scan", Screen::RadioScope},
+    {"PASSCODE SIM", "15 sec cinematic PIN demo", Screen::PasscodeSim},
+    {"HID PAD", "Apps, terminal y multimedia", Screen::HidDemo},
+    {"IPHONE REMOTE", "BLE app launcher y multimedia", Screen::IphoneRemote},
+    {"BATTERY METER", "Li-ion 1S voltage monitor", Screen::Battery},
+    {"ABOUT TEMPLATE", "Pins, controls and next apps", Screen::About},
+};
+
+struct GpsPlace {
+    const char* city;
+    const char* municipality;
+    const char* state;
+    float lat;
+    float lng;
+    uint16_t closeKm;
+};
+
+struct GpsPlaceMatch {
+    const GpsPlace* place;
+    float km;
+    bool close;
+};
+
+const GpsPlace GPS_PLACES[] = {
+    {"Chihuahua", "Chihuahua", "Chihuahua MX", 28.6353f, -106.0889f, 65},
+    {"Ciudad Juarez", "Juarez", "Chihuahua MX", 31.6904f, -106.4245f, 70},
+    {"Delicias", "Delicias", "Chihuahua MX", 28.1901f, -105.4701f, 45},
+    {"Cuauhtemoc", "Cuauhtemoc", "Chihuahua MX", 28.4050f, -106.8667f, 55},
+    {"Hidalgo del Parral", "Hidalgo del Parral", "Chihuahua MX", 26.9333f, -105.6667f, 55},
+    {"Camargo", "Camargo", "Chihuahua MX", 27.6903f, -105.1714f, 45},
+    {"Jimenez", "Jimenez", "Chihuahua MX", 27.1303f, -104.9073f, 50},
+    {"Nuevo Casas Grandes", "Nuevo Casas Grandes", "Chihuahua MX", 30.4155f, -107.9110f, 60},
+    {"Ojinaga", "Ojinaga", "Chihuahua MX", 29.5669f, -104.5449f, 60},
+    {"Aldama", "Aldama", "Chihuahua MX", 28.8392f, -105.9148f, 35},
+    {"Meoqui", "Meoqui", "Chihuahua MX", 28.2728f, -105.4818f, 35},
+    {"Santa Isabel", "Santa Isabel", "Chihuahua MX", 28.3428f, -106.3732f, 35},
+    {"Saucillo", "Saucillo", "Chihuahua MX", 28.0313f, -105.2935f, 40},
+    {"Creel", "Bocoyna", "Chihuahua MX", 27.7506f, -107.6354f, 45},
+    {"Guachochi", "Guachochi", "Chihuahua MX", 26.8200f, -107.0740f, 55},
+    {"Madera", "Madera", "Chihuahua MX", 29.1900f, -108.1460f, 55},
+    {"Ahumada", "Ahumada", "Chihuahua MX", 30.6180f, -106.5120f, 60},
+    {"Buenaventura", "Buenaventura", "Chihuahua MX", 29.8380f, -107.4710f, 55},
+    {"Ascension", "Ascension", "Chihuahua MX", 31.0920f, -107.9960f, 60},
+    {"Janos", "Janos", "Chihuahua MX", 30.8900f, -108.1930f, 55},
+};
+
+class BleRemoteServerCallbacks : public BLEServerCallbacks {
+public:
+    void onConnect(BLEServer* server) override {
+        (void)server;
+        bleRemoteConnected = true;
+    }
+
+    void onDisconnect(BLEServer* server) override {
+        bleRemoteConnected = false;
+        if (server) server->startAdvertising();
+    }
+};
+
+BleRemoteServerCallbacks bleRemoteCallbacks;
+
+constexpr uint8_t MENU_COUNT = sizeof(MENU) / sizeof(MENU[0]);
+Screen currentScreen = Screen::Home;
+uint8_t menuIndex = 0;
+uint8_t menuScroll = 0;
+bool radioPaused = false;
+
+void drawPixelSafe(int x, int y, uint16_t color) {
+    if (x < 0 || y < 0 || x >= SCREEN_W || y >= SCREEN_H) return;
+    frame.drawPixel(x, y, color);
+}
+
+void toneClick(uint16_t freq = 2500, uint16_t ms = 12) {
+    ledcWriteTone(0, freq);
+    delay(ms);
+    ledcWriteTone(0, 0);
+}
+
+void setStatus(const char* text) {
+    strncpy(statusLine, text, sizeof(statusLine) - 1);
+    statusLine[sizeof(statusLine) - 1] = '\0';
+}
+
+String uptimeText() {
+    uint32_t seconds = (millis() - bootMs) / 1000;
+    char out[16];
+    snprintf(out, sizeof(out), "%02lu:%02lu", seconds / 60, seconds % 60);
+    return String(out);
+}
+
+float readBatteryVolts() {
+    uint32_t mv = 0;
+    for (uint8_t i = 0; i < 20; i++) {
+        mv += analogReadMilliVolts(CD_VBAT_ADC);
+        delay(2);
+    }
+    return (mv / 20.0f / 1000.0f) * CD_VBAT_DIVIDER;
+}
+
+int batteryPercent(float volts) {
+    const float minV = 3.25f;
+    const float maxV = 4.20f;
+    int pct = roundf(((volts - minV) / (maxV - minV)) * 100.0f);
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    return pct;
+}
+
+void drainGps(uint16_t ms = 8) {
+    const uint32_t start = millis();
+    while ((millis() - start) < ms) {
+        while (gpsSerial.available()) {
+            const char c = gpsSerial.read();
+            gps.encode(c);
+            gpsLastCharMs = millis();
+            gpsLastChars = gps.charsProcessed();
+        }
+        delay(1);
+    }
+}
+
+void updateGpsStats() {
+    const uint32_t now = millis();
+    const uint32_t chars = gps.charsProcessed();
+    if (gpsStatsLastMs == 0) {
+        gpsStatsLastMs = now;
+        gpsStatsLastChars = chars;
+        return;
+    }
+    const uint32_t elapsed = now - gpsStatsLastMs;
+    if (elapsed >= 1000) {
+        gpsCharsPerSec = ((chars - gpsStatsLastChars) * 1000UL) / elapsed;
+        gpsStatsLastMs = now;
+        gpsStatsLastChars = chars;
+    }
+}
+
+void serviceGps(uint16_t ms = 12) {
+    drainGps(ms);
+    updateGpsStats();
+}
+
+void drawGrid() {
+    for (int x = 0; x < SCREEN_W; x += 16) {
+        frame.drawFastVLine(x, 0, SCREEN_H, (x % 64 == 0) ? 0x0320 : 0x0104);
+    }
+    for (int y = 0; y < SCREEN_H; y += 16) {
+        frame.drawFastHLine(0, y, SCREEN_W, (y % 64 == 0) ? 0x0320 : 0x0104);
+    }
+}
+
+void pushFrame() {
+    if (frameReady) {
+        digitalWrite(CD_NRF1_CSN, HIGH);
+        digitalWrite(CD_NRF2_CSN, HIGH);
+        digitalWrite(CD_SD_CS, HIGH);
+        frame.pushSprite(0, 0);
+    }
+}
+
+void restoreTftBus() {
+    if (radio1Ready) radio1.stopListening();
+    if (radio2Ready) radio2.stopListening();
+    digitalWrite(CD_NRF1_CE, LOW);
+    digitalWrite(CD_NRF2_CE, LOW);
+    digitalWrite(CD_NRF1_CSN, HIGH);
+    digitalWrite(CD_NRF2_CSN, HIGH);
+    digitalWrite(CD_SD_CS, HIGH);
+    digitalWrite(CD_TFT_CS, HIGH);
+    SPI.begin(CD_SPI_SCK, CD_SPI_MISO, CD_SPI_MOSI);
+    delayMicroseconds(60);
+}
+
+void drawDirectStatus(const char* title, const char* line, uint16_t color = COL_CYAN) {
+    restoreTftBus();
+    tft.fillScreen(COL_BG);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextSize(1);
+    tft.setTextColor(color, COL_BG);
+    tft.drawString(title, 18, 46, 2);
+    tft.setTextColor(COL_TEXT, COL_BG);
+    tft.drawString(line, 18, 78, 2);
+    tft.setTextColor(COL_MUTED, COL_BG);
+    tft.drawString("CYBERDECK iPHONE REMOTE", 18, 112, 2);
+    tft.drawRoundRect(16, 38, 288, 112, 5, color);
+}
+
+void releaseFrameForBleStartup() {
+    if (frameReady) {
+        frame.deleteSprite();
+        frameReady = false;
+    }
+    drawDirectStatus("INICIANDO BLE", "Liberando memoria de pantalla...", COL_AMBER);
+    delay(80);
+}
+
+bool recreateFrameAfterBleStartup() {
+    restoreTftBus();
+    frame.setColorDepth(FRAME_COLOR_DEPTH);
+    frameReady = frame.createSprite(SCREEN_W, SCREEN_H) != nullptr;
+    if (!frameReady) {
+        drawDirectStatus("ERROR TFT", "No se pudo recrear sprite.", COL_RED);
+        return false;
+    }
+    return true;
+}
+
+void drawText(int x, int y, const String& text, uint16_t color = COL_TEXT, uint8_t size = 1) {
+    frame.setTextColor(color, COL_BG);
+    frame.setTextSize(size);
+    frame.setTextDatum(TL_DATUM);
+    frame.drawString(text, x, y, 2);
+}
+
+void drawTextOn(int x, int y, const String& text, uint16_t color, uint16_t bg, uint8_t size = 1) {
+    frame.setTextColor(color, bg);
+    frame.setTextSize(size);
+    frame.setTextDatum(TL_DATUM);
+    frame.drawString(text, x, y, 2);
+}
+
+void drawHeader(const char* title, const char* tag) {
+    frame.fillRect(0, 0, SCREEN_W, 28, 0x0184);
+    frame.drawFastHLine(0, 28, SCREEN_W, COL_GREEN);
+    frame.fillCircle(10, 14, 4, COL_GREEN);
+    drawTextOn(20, 6, title, COL_GREEN, 0x0184, 1);
+    frame.setTextDatum(TR_DATUM);
+    frame.setTextColor(COL_CYAN, 0x0184);
+    frame.setTextSize(1);
+    frame.drawString(tag, 314, 6, 2);
+    frame.setTextDatum(TL_DATUM);
+}
+
+void drawFooter(const char* hint = "ENC/UP/DOWN MOVE  OK SELECT  BACK EXIT") {
+    frame.fillRect(0, 218, SCREEN_W, 22, 0x0184);
+    frame.drawFastHLine(0, 217, SCREEN_W, COL_GRID);
+    frame.setTextColor(COL_MUTED, 0x0184);
+    frame.setTextSize(1);
+    frame.setTextDatum(TL_DATUM);
+    frame.drawString(hint, 8, 221, 2);
+}
+
+void drawBadge(int x, int y, int w, const char* label, const String& value, uint16_t color) {
+    frame.drawRoundRect(x, y, w, 38, 4, color);
+    frame.fillRect(x + 1, y + 1, w - 2, 12, color);
+    frame.setTextSize(1);
+    frame.setTextColor(COL_BG, color);
+    frame.drawString(label, x + 5, y + 1, 1);
+    frame.setTextColor(COL_TEXT, COL_BG);
+    frame.drawString(value, x + 6, y + 18, 2);
+}
+
+void drawMiniBadge(int x, int y, int w, const char* label, const String& value, uint16_t color) {
+    frame.drawRoundRect(x, y, w, 25, 4, color);
+    frame.setTextSize(1);
+    frame.setTextColor(color, COL_BG);
+    frame.drawString(label, x + 4, y + 2, 1);
+    frame.setTextColor(COL_TEXT, COL_BG);
+    frame.drawString(value, x + 4, y + 11, 1);
+}
+
+void drawBar(int x, int y, int w, int h, int pct, uint16_t color) {
+    pct = constrain(pct, 0, 100);
+    frame.drawRect(x, y, w, h, COL_GRID);
+    frame.fillRect(x + 2, y + 2, w - 4, h - 4, 0x0841);
+    frame.fillRect(x + 2, y + 2, ((w - 4) * pct) / 100, h - 4, color);
+}
+
+void drawBoot() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    frame.drawRoundRect(18, 28, 284, 178, 5, COL_GREEN);
+    frame.setTextColor(COL_GREEN, COL_BG);
+    frame.setTextSize(2);
+    frame.setTextDatum(MC_DATUM);
+    frame.drawString("CYBERDECK", SCREEN_W / 2, 74, 2);
+    frame.setTextSize(1);
+    frame.drawString("S3 APPS TEMPLATE", SCREEN_W / 2, 104, 2);
+
+    const int bx = 50;
+    const int by = 136;
+    const int bw = 220;
+    frame.drawRect(bx, by, bw, 12, COL_GREEN);
+    for (int i = 0; i <= bw - 4; i += 18) {
+        frame.fillRect(bx + 2, by + 2, i, 8, COL_GREEN);
+        pushFrame();
+        delay(22);
+    }
+
+    frame.setTextColor(COL_MUTED, COL_BG);
+    frame.drawString("TFT / INPUT / GPS / SD / NRF READY", SCREEN_W / 2, 170, 2);
+    frame.setTextDatum(TL_DATUM);
+    pushFrame();
+}
+
+bool beginSdCard() {
+    if (sdReady) return true;
+    if (sdTried && !sdReady) return false;
+    sdTried = true;
+
+    pinMode(CD_TFT_CS, OUTPUT);
+    digitalWrite(CD_TFT_CS, HIGH);
+    pinMode(CD_NRF1_CSN, OUTPUT);
+    digitalWrite(CD_NRF1_CSN, HIGH);
+    pinMode(CD_NRF2_CSN, OUTPUT);
+    digitalWrite(CD_NRF2_CSN, HIGH);
+    pinMode(CD_SD_CS, OUTPUT);
+    digitalWrite(CD_SD_CS, HIGH);
+    pinMode(CD_SD_MISO, INPUT_PULLUP);
+
+    sdSPI.begin(CD_SD_SCK, CD_SD_MISO, CD_SD_MOSI, CD_SD_CS);
+    const uint32_t speeds[] = {4000000, 10000000, 20000000};
+    for (uint8_t i = 0; i < sizeof(speeds) / sizeof(speeds[0]); i++) {
+        SD.end();
+        delay(50);
+        if (SD.begin(CD_SD_CS, sdSPI, speeds[i])) {
+            sdReady = true;
+            sdMountHz = speeds[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+bool writeTextFile(const char* path, const String& content) {
+    if (!beginSdCard()) return false;
+    File f = SD.open(path, FILE_WRITE);
+    if (!f) return false;
+    f.print(content);
+    f.close();
+    return true;
+}
+
+void countRootFiles(uint16_t& dirs, uint16_t& files) {
+    dirs = 0;
+    files = 0;
+    if (!beginSdCard()) return;
+
+    File root = SD.open("/");
+    if (!root) return;
+
+    while (true) {
+        File entry = root.openNextFile();
+        if (!entry) break;
+        if (entry.isDirectory()) dirs++;
+        else files++;
+        entry.close();
+    }
+    root.close();
+}
+
+void ensureSdFolders() {
+    if (!beginSdCard()) {
+        setStatus("SD mount failed");
+        return;
+    }
+    SD.mkdir("/APPS");
+    SD.mkdir("/APPS/LOGS");
+    SD.mkdir("/APPS/EXPORTS");
+
+    String out;
+    out += "CYBERDECK S3 APPS\r\n";
+    out += "Uptime: " + uptimeText() + "\r\n";
+    out += "Battery: " + String(batteryVolts, 2) + "V\r\n";
+    out += "GPS chars: " + String(gps.charsProcessed()) + "\r\n";
+    writeTextFile("/APPS/APP_TEST.txt", out);
+    setStatus("SD wrote /APPS/APP_TEST.txt");
+}
+
+void beginGps() {
+    gpsSerial.setRxBufferSize(1024);
+    gpsSerial.begin(CD_GPS_BAUD, SERIAL_8N1, CD_GPS_RX, CD_GPS_TX);
+    gpsLastCharMs = millis();
+    gpsStatsLastMs = 0;
+    gpsStatsLastChars = gps.charsProcessed();
+    gpsPortReady = true;
+}
+
+void beginHid() {
+    if (hidReady) return;
+    HidKeyboard.begin();
+    HidConsumer.begin();
+    USB.begin();
+    hidReady = true;
+}
+
+bool beginRadios() {
+    if (radiosTried) return radio1Ready || radio2Ready;
+    radiosTried = true;
+
+    pinMode(CD_NRF1_CE, OUTPUT);
+    pinMode(CD_NRF2_CE, OUTPUT);
+    pinMode(CD_NRF1_CSN, OUTPUT);
+    pinMode(CD_NRF2_CSN, OUTPUT);
+    digitalWrite(CD_NRF1_CE, LOW);
+    digitalWrite(CD_NRF2_CE, LOW);
+    digitalWrite(CD_NRF1_CSN, HIGH);
+    digitalWrite(CD_NRF2_CSN, HIGH);
+
+    radio1Ready = radio1.begin();
+    radio2Ready = radio2.begin();
+
+    RF24* radios[] = {&radio1, &radio2};
+    const bool ready[] = {radio1Ready, radio2Ready};
+    for (uint8_t i = 0; i < 2; i++) {
+        if (!ready[i]) continue;
+        radios[i]->setAutoAck(false);
+        radios[i]->disableCRC();
+        radios[i]->setPALevel(RF24_PA_MIN);
+        radios[i]->setDataRate(RF24_2MBPS);
+        radios[i]->setChannel(0);
+        radios[i]->startListening();
+    }
+
+    setStatus((radio1Ready || radio2Ready) ? "NRF scan ready" : "NRF not detected");
+    return radio1Ready || radio2Ready;
+}
+
+void quietRadiosForGps() {
+    if (radio1Ready) radio1.stopListening();
+    if (radio2Ready) radio2.stopListening();
+    digitalWrite(CD_NRF1_CE, LOW);
+    digitalWrite(CD_NRF2_CE, LOW);
+    digitalWrite(CD_NRF1_CSN, HIGH);
+    digitalWrite(CD_NRF2_CSN, HIGH);
+    radioScanArmed = false;
+}
+
+void prepareGpsMode() {
+    quietRadiosForGps();
+    gpsSerial.end();
+    delay(30);
+    beginGps();
+    serviceGps(120);
+    setStatus("GPS UART live");
+}
+
+void updateSensors() {
+    serviceGps(5);
+    const uint32_t now = millis();
+    if (now - lastSensorMs < 900) return;
+    lastSensorMs = now;
+    batteryVolts = readBatteryVolts();
+    batteryPct = batteryPercent(batteryVolts);
+}
+
+void scanRadioBurst(uint8_t channelsToScan = 10) {
+    if (!radioScanArmed) return;
+    if (radioPaused) return;
+    if (!beginRadios()) return;
+    if (millis() - lastRadioMs < 6) return;
+    lastRadioMs = millis();
+
+    digitalWrite(CD_TFT_CS, HIGH);
+    digitalWrite(CD_SD_CS, HIGH);
+    digitalWrite(CD_NRF1_CSN, HIGH);
+    digitalWrite(CD_NRF2_CSN, HIGH);
+
+    RF24* activeRadios[2];
+    uint8_t activeCount = 0;
+    if (radio1Ready) activeRadios[activeCount++] = &radio1;
+    if (radio2Ready) activeRadios[activeCount++] = &radio2;
+    if (activeCount == 0) return;
+
+    uint8_t scanned = 0;
+    while (scanned < channelsToScan) {
+        uint8_t channelForSlot[2] = {0, 0};
+        uint8_t slotCount = 0;
+
+        for (; slotCount < activeCount && scanned < channelsToScan; slotCount++, scanned++) {
+            channelForSlot[slotCount] = radioScanChannel;
+            activeRadios[slotCount]->setChannel(radioScanChannel);
+            activeRadios[slotCount]->startListening();
+            radioScanChannel = (radioScanChannel + 1) % 80;
+        }
+
+        delayMicroseconds(140);
+
+        uint8_t hits[2] = {0, 0};
+        for (uint8_t sample = 0; sample < 5; sample++) {
+            for (uint8_t slot = 0; slot < slotCount; slot++) {
+                if (activeRadios[slot]->testCarrier()) hits[slot]++;
+            }
+            delayMicroseconds(18);
+        }
+
+        for (uint8_t slot = 0; slot < slotCount; slot++) {
+            activeRadios[slot]->stopListening();
+            uint16_t& bar = radioBars[channelForSlot[slot]];
+            const uint16_t target = min<uint16_t>(100, hits[slot] * 20);
+            if (target > bar) {
+                bar = (bar * 2 + target * 3) / 5;
+            } else if (bar > 0) {
+                bar -= max<uint16_t>(1, bar / 8);
+            }
+            radioScanTicks++;
+        }
+    }
+}
+
+void drawHome() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("CYBERDECK S3 APPS", "launcher");
+
+    frame.setTextSize(1);
+    frame.setTextColor(COL_CYAN, COL_BG);
+    frame.drawString("Individual app workspace for quick video-ready builds", 10, 36, 2);
+
+    const int listY = 54;
+    const int rowH = 25;
+    const uint8_t visible = 5;
+    if (menuIndex < menuScroll) menuScroll = menuIndex;
+    if (menuIndex >= menuScroll + visible) menuScroll = menuIndex - visible + 1;
+
+    for (uint8_t row = 0; row < visible; row++) {
+        const uint8_t idx = menuScroll + row;
+        const int y = listY + row * rowH;
+        if (idx >= MENU_COUNT) {
+            frame.drawRect(10, y, 300, 22, 0x0821);
+            continue;
+        }
+
+        const bool selected = idx == menuIndex;
+        const uint16_t bg = selected ? COL_GREEN : COL_PANEL;
+        const uint16_t fg = selected ? COL_BG : COL_TEXT;
+        frame.fillRoundRect(10, y, 300, 21, 4, bg);
+        frame.drawRoundRect(10, y, 300, 21, 4, selected ? COL_TEXT : COL_GRID);
+        drawTextOn(18, y + 2, MENU[idx].title, fg, bg, 1);
+        frame.setTextDatum(TR_DATUM);
+        frame.setTextColor(selected ? COL_BG : COL_MUTED, bg);
+        frame.drawString(MENU[idx].subtitle, 303, y + 2, 2);
+        frame.setTextDatum(TL_DATUM);
+    }
+
+    drawMiniBadge(12, 187, 70, "BAT", String(batteryPct) + "%", batteryPct < 20 ? COL_RED : COL_GREEN);
+    drawMiniBadge(90, 187, 70, "SD", sdReady ? "OK" : "WAIT", sdReady ? COL_CYAN : COL_AMBER);
+    drawMiniBadge(168, 187, 70, "GPS", String(gps.satellites.value()), gps.location.isValid() ? COL_GREEN : COL_AMBER);
+    drawMiniBadge(246, 187, 62, "UP", uptimeText(), COL_CYAN);
+    drawFooter("ENC/UP/DOWN MOVE  OK OPEN  OK HOLD BACK");
+}
+
+void drawSystemPulse() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("SYSTEM PULSE", "hardware");
+
+    drawBadge(10, 38, 72, "VBAT", String(batteryVolts, 2) + "V", batteryPct < 20 ? COL_RED : COL_GREEN);
+    drawBadge(90, 38, 72, "SD", sdReady ? "MOUNT" : "NO CARD", sdReady ? COL_CYAN : COL_RED);
+    drawBadge(170, 38, 65, "NRF1", radio1Ready ? "OK" : "MISS", radio1Ready ? COL_GREEN : COL_AMBER);
+    drawBadge(243, 38, 65, "NRF2", radio2Ready ? "OK" : "MISS", radio2Ready ? COL_GREEN : COL_AMBER);
+
+    frame.drawRoundRect(10, 88, 300, 92, 5, COL_GRID);
+    drawText(20, 98, "BATTERY", COL_MUTED);
+    drawBar(86, 101, 208, 12, batteryPct, batteryPct < 20 ? COL_RED : COL_GREEN);
+
+    drawText(20, 124, "GPS CHARS", COL_MUTED);
+    drawBar(102, 127, 192, 12, min<uint32_t>(gps.charsProcessed() / 8, 100), COL_CYAN);
+    drawText(20, 150, "SATELLITES", COL_MUTED);
+    drawBar(102, 153, 192, 12, min<uint32_t>(gps.satellites.value() * 8, 100), COL_AMBER);
+
+    drawText(14, 188, String("Status: ") + statusLine, COL_CYAN);
+    drawFooter("BACK EXIT  OK REFRESH  OK HOLD MENU");
+}
+
+void drawCompass(int cx, int cy, int r, float course, bool valid) {
+    frame.drawCircle(cx, cy, r, COL_GRID);
+    frame.drawCircle(cx, cy, r - 16, 0x03E0);
+    drawText(cx - 6, cy - r + 4, "N", COL_GREEN);
+    drawText(cx - 6, cy + r - 18, "S", COL_MUTED);
+    drawText(cx - r + 6, cy - 8, "W", COL_MUTED);
+    drawText(cx + r - 16, cy - 8, "E", COL_MUTED);
+
+    if (!valid) {
+        frame.drawLine(cx - 18, cy, cx + 18, cy, COL_RED);
+        frame.drawLine(cx, cy - 18, cx, cy + 18, COL_RED);
+        return;
+    }
+
+    const float rad = (course - 90.0f) * DEG_TO_RAD;
+    const int nx = cx + cosf(rad) * (r - 24);
+    const int ny = cy + sinf(rad) * (r - 24);
+    frame.drawLine(cx, cy, nx, ny, COL_GREEN);
+    frame.fillCircle(nx, ny, 4, COL_GREEN);
+}
+
+String fitGpsText(const String& text, uint8_t maxChars) {
+    if (text.length() <= maxChars) return text;
+    if (maxChars <= 1) return "~";
+    return text.substring(0, maxChars - 1) + "~";
+}
+
+String gpsCoordText(double value, const char* positive, const char* negative) {
+    const char* hemi = value >= 0 ? positive : negative;
+    return String(fabs(value), 6) + " " + hemi;
+}
+
+String gpsTimeText() {
+    if (!gps.time.isValid()) return "--:--:-- UTC";
+    char out[16];
+    snprintf(out, sizeof(out), "%02d:%02d:%02d UTC", gps.time.hour(), gps.time.minute(), gps.time.second());
+    return String(out);
+}
+
+String gpsAltText() {
+    if (!gps.altitude.isValid()) return "--";
+    return String(gps.altitude.meters(), 1) + " m";
+}
+
+String gpsSpeedText() {
+    if (!gps.speed.isValid()) return "--";
+    return String(gps.speed.kmph(), 1) + " km/h";
+}
+
+String gpsCourseText() {
+    if (!gps.course.isValid()) return "--";
+    return String((int)roundf(gps.course.deg())) + " deg " + TinyGPSPlus::cardinal(gps.course.deg());
+}
+
+String gpsHdopText() {
+    if (!gps.hdop.isValid()) return "--";
+    return String(gps.hdop.hdop(), 2);
+}
+
+String gpsKmText(float km) {
+    if (km < 10.0f) return String(km, 1) + " km";
+    return String((int)roundf(km)) + " km";
+}
+
+float gpsDistanceKm(float lat1, float lng1, float lat2, float lng2) {
+    const float dLat = (lat2 - lat1) * DEG_TO_RAD;
+    const float dLng = (lng2 - lng1) * DEG_TO_RAD;
+    const float rLat1 = lat1 * DEG_TO_RAD;
+    const float rLat2 = lat2 * DEG_TO_RAD;
+    const float sLat = sinf(dLat * 0.5f);
+    const float sLng = sinf(dLng * 0.5f);
+    const float a = (sLat * sLat) + cosf(rLat1) * cosf(rLat2) * (sLng * sLng);
+    const float c = 2.0f * atan2f(sqrtf(a), sqrtf(1.0f - a));
+    return 6371.0f * c;
+}
+
+GpsPlaceMatch resolveGpsPlace() {
+    GpsPlaceMatch best = {nullptr, 99999.0f, false};
+    if (!gps.location.isValid()) return best;
+
+    const float lat = gps.location.lat();
+    const float lng = gps.location.lng();
+    for (const GpsPlace& place : GPS_PLACES) {
+        const float km = gpsDistanceKm(lat, lng, place.lat, place.lng);
+        if (km < best.km) {
+            best.place = &place;
+            best.km = km;
+        }
+    }
+    best.close = best.place != nullptr && best.km <= best.place->closeKm;
+    return best;
+}
+
+void drawGpsPanel(int x, int y, int w, int h, const char* title) {
+    frame.drawRoundRect(x, y, w, h, 5, COL_GRID);
+    frame.setTextSize(1);
+    frame.setTextDatum(TL_DATUM);
+    frame.setTextColor(COL_GREEN, COL_BG);
+    frame.drawString(title, x + 8, y + 5, 1);
+}
+
+void drawGpsLine(int x, int y, const char* label, const String& value, uint16_t color = COL_TEXT, uint8_t maxChars = 18) {
+    frame.setTextDatum(TL_DATUM);
+    frame.setTextSize(1);
+    frame.setTextColor(COL_MUTED, COL_BG);
+    frame.drawString(label, x, y + 4, 1);
+    frame.setTextColor(color, COL_BG);
+    frame.drawString(fitGpsText(value, maxChars), x + 42, y, 2);
+}
+
+void saveGpsSnapshot() {
+    if (beginSdCard()) SD.mkdir("/APPS");
+
+    String out;
+    const GpsPlaceMatch place = resolveGpsPlace();
+    out += "CYBERDECK S3 APPS GPS SNAPSHOT\r\n";
+    out += "Fix: " + String(gps.location.isValid() ? "YES" : "NO") + "\r\n";
+    out += "Satellites: " + String(gps.satellites.value()) + "\r\n";
+    out += "HDOP: " + String(gps.hdop.isValid() ? gps.hdop.hdop() : 0.0, 2) + "\r\n";
+    if (gps.location.isValid()) {
+        out += "Lat: " + String(gps.location.lat(), 6) + "\r\n";
+        out += "Lng: " + String(gps.location.lng(), 6) + "\r\n";
+        out += "Altitude: " + gpsAltText() + "\r\n";
+        out += "Speed: " + gpsSpeedText() + "\r\n";
+        out += "Course: " + gpsCourseText() + "\r\n";
+        out += "UTC: " + gpsTimeText() + "\r\n";
+    }
+    if (place.place) {
+        out += "Nearest city: " + String(place.place->city) + "\r\n";
+        out += "Municipality: " + String(place.place->municipality) + "\r\n";
+        out += "State: " + String(place.place->state) + "\r\n";
+        out += "Distance: " + gpsKmText(place.km) + "\r\n";
+        out += "Close match: " + String(place.close ? "YES" : "NO") + "\r\n";
+    }
+    out += "Battery: " + String(batteryVolts, 2) + "V\r\n";
+
+    if (writeTextFile("/APPS/GPS_SNAPSHOT.txt", out)) {
+        setStatus("GPS snapshot saved");
+    } else {
+        setStatus("GPS save failed");
+    }
+}
+
+void drawGpsRadar() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    const bool nmeaLive = gps.charsProcessed() > 0 && (millis() - gpsLastCharMs) < 2500;
+    const bool hasFix = gps.location.isValid();
+    const GpsPlaceMatch place = resolveGpsPlace();
+    drawHeader("GPS RADAR", hasFix ? "ubicacion real" : (nmeaLive ? "nmea activo" : "sin rx"));
+
+    drawGpsPanel(8, 36, 104, 124, "SENAL");
+    drawCompass(60, 92, 34, gps.course.deg(), gps.course.isValid());
+    drawText(18, 132, String("SAT ") + gps.satellites.value(), hasFix ? COL_GREEN : COL_AMBER);
+    drawText(18, 148, String("HDOP ") + gpsHdopText(), gps.hdop.isValid() ? COL_CYAN : COL_MUTED);
+
+    drawGpsPanel(120, 36, 192, 124, "UBICACION REAL");
+
+    if (hasFix) {
+        drawGpsLine(130, 54, "LAT", gpsCoordText(gps.location.lat(), "N", "S"), COL_GREEN, 18);
+        drawGpsLine(130, 74, "LON", gpsCoordText(gps.location.lng(), "E", "W"), COL_GREEN, 18);
+        drawGpsLine(130, 94, "ALT", gpsAltText(), gps.altitude.isValid() ? COL_CYAN : COL_MUTED, 18);
+        drawGpsLine(130, 114, "VEL", gpsSpeedText(), gps.speed.isValid() ? COL_AMBER : COL_MUTED, 18);
+        drawGpsLine(130, 134, "UTC", gpsTimeText(), gps.time.isValid() ? COL_TEXT : COL_MUTED, 18);
+    } else if (!nmeaLive) {
+        drawGpsLine(130, 58, "GPS", "NO NMEA on RX18", COL_RED, 18);
+        drawGpsLine(130, 82, "PIN", "TX GPS -> GPIO18", COL_AMBER, 18);
+        drawGpsLine(130, 106, "UART", "RX18 TX17 9600", COL_CYAN, 18);
+        drawGpsLine(130, 130, "RX", String(gpsCharsPerSec) + "/s", COL_MUTED, 18);
+    } else {
+        drawGpsLine(130, 58, "GPS", "NMEA OK", COL_GREEN, 18);
+        drawGpsLine(130, 82, "FIX", "Buscando satelites", COL_AMBER, 18);
+        drawGpsLine(130, 106, "RX", String(gpsCharsPerSec) + "/s", COL_CYAN, 18);
+        drawGpsLine(130, 130, "CHK", String(gps.passedChecksum()) + "/" + gps.failedChecksum(), COL_MUTED, 18);
+    }
+
+    drawGpsPanel(8, 166, 304, 46, "LUGAR ESTIMADO");
+    if (hasFix && place.place) {
+        const String cityLine = String("Ciudad: ") + place.place->city + "  Mun: " + place.place->municipality;
+        const String stateLine = String(place.close ? "Zona: " : "Cerca: ") + place.place->state + "  " + gpsKmText(place.km);
+        drawText(18, 182, fitGpsText(cityLine, 38), place.close ? COL_GREEN : COL_AMBER);
+        drawText(18, 198, fitGpsText(stateLine, 38), COL_CYAN);
+    } else if (nmeaLive) {
+        drawText(18, 184, "GPS conectado. Esperando fix real...", COL_AMBER);
+        drawText(18, 200, String("RX ") + gpsCharsPerSec + "/s  OK/Bad " + gps.passedChecksum() + "/" + gps.failedChecksum(), COL_CYAN);
+    } else {
+        drawText(18, 184, "Sin datos NMEA. Revisa TX GPS -> RX18.", COL_RED);
+        drawText(18, 200, String("Chars ") + gps.charsProcessed() + "  Age " + ((millis() - gpsLastCharMs) / 1000) + "s", COL_MUTED);
+    }
+    drawFooter("OK GUARDAR SNAPSHOT  BACK SALIR");
+}
+
+void runGpsRadarApp() {
+    currentScreen = Screen::GpsRadar;
+    prepareGpsMode();
+    gpsLastUiMs = 0;
+    drawGpsRadar();
+    pushFrame();
+
+    while (true) {
+        serviceGps(28);
+
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            toneClick(1600, 10);
+            drawHome();
+            pushFrame();
+            return;
+        }
+        if (action == AppAction::Select) {
+            saveGpsSnapshot();
+            toneClick(3000, 18);
+            drawGpsRadar();
+            pushFrame();
+        }
+
+        if (millis() - gpsLastUiMs >= 220) {
+            gpsLastUiMs = millis();
+            drawGpsRadar();
+            pushFrame();
+        }
+        delay(2);
+    }
+}
+
+String sdTypeText() {
+    if (!beginSdCard()) return "NO CARD";
+    switch (SD.cardType()) {
+        case CARD_MMC: return "MMC";
+        case CARD_SD: return "SDSC";
+        case CARD_SDHC: return "SDHC";
+        default: return "UNKNOWN";
+    }
+}
+
+void drawSdVault() {
+    uint16_t dirs = 0;
+    uint16_t files = 0;
+    countRootFiles(dirs, files);
+
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("SD VAULT", sdReady ? "mounted" : "offline");
+
+    frame.drawRoundRect(10, 42, 300, 120, 5, sdReady ? COL_CYAN : COL_RED);
+    drawText(22, 54, String("Card: ") + sdTypeText(), sdReady ? COL_GREEN : COL_RED);
+    drawText(22, 76, String("SPI: ") + String((int)CD_SD_SCK) + "/" + String((int)CD_SD_MOSI) + "/" + String((int)CD_SD_MISO) + " CS" + String((int)CD_SD_CS), COL_MUTED);
+    drawText(22, 98, String("Speed: ") + String(sdMountHz / 1000000) + " MHz", COL_MUTED);
+    drawText(22, 120, String("Root dirs/files: ") + String(dirs) + "/" + String(files), COL_CYAN);
+    drawText(22, 142, "OK creates /APPS and writes APP_TEST.txt", COL_AMBER);
+
+    drawText(12, 188, String("Status: ") + statusLine, COL_CYAN);
+    drawFooter("OK TEST WRITE  BACK EXIT");
+}
+
+void drawRadioScope() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("RADIO SCOPE", !radioScanArmed ? "ready" : (radioPaused ? "paused" : "passive"));
+
+    frame.drawRoundRect(10, 42, 300, 132, 5, COL_GRID);
+    const int plotX = 18;
+    const int plotY = 58;
+    const int plotW = 284;
+    const int plotH = 96;
+    frame.drawRect(plotX, plotY, plotW, plotH, 0x02A0);
+
+    uint16_t peak = 0;
+    uint8_t peakCh = 0;
+    for (uint8_t ch = 0; ch < 80; ch++) {
+        if (radioBars[ch] > peak) {
+            peak = radioBars[ch];
+            peakCh = ch;
+        }
+        const int x = plotX + 2 + (ch * (plotW - 4)) / 80;
+        const int h = map(radioBars[ch], 0, 100, 1, plotH - 5);
+        const uint16_t color = radioBars[ch] > 65 ? COL_RED : (radioBars[ch] > 32 ? COL_AMBER : COL_GREEN);
+        frame.drawFastVLine(x, plotY + plotH - 2 - h, h, color);
+    }
+
+    drawText(18, 164, String("NRF1 ") + (radio1Ready ? "OK" : "MISS") + "  NRF2 " + (radio2Ready ? "OK" : "MISS"), COL_CYAN);
+    drawText(18, 184, String("Peak CH ") + peakCh + "  Energy " + peak + "%", peak > 65 ? COL_RED : COL_GREEN);
+    drawText(180, 184, radioPaused ? "OK resume" : "OK pause", COL_AMBER);
+    drawText(18, 202, String("Samples ") + radioScanTicks + "  CH " + radioScanChannel, COL_MUTED);
+    drawFooter("OK PAUSE/RESUME  BACK EXIT");
+}
+
+void drawRadioDirectText(int x, int y, const String& text, uint16_t color, uint16_t bg = COL_BG) {
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextSize(1);
+    tft.setTextColor(color, bg);
+    tft.drawString(text, x, y, 2);
+}
+
+void drawRadioScopeDirectFrame() {
+    restoreTftBus();
+    tft.fillScreen(COL_BG);
+
+    for (int x = 0; x < SCREEN_W; x += 16) {
+        tft.drawFastVLine(x, 0, SCREEN_H, (x % 64 == 0) ? 0x0320 : 0x0104);
+    }
+    for (int y = 0; y < SCREEN_H; y += 16) {
+        tft.drawFastHLine(0, y, SCREEN_W, (y % 64 == 0) ? 0x0320 : 0x0104);
+    }
+
+    tft.fillRect(0, 0, SCREEN_W, 28, 0x0184);
+    tft.drawFastHLine(0, 28, SCREEN_W, COL_GREEN);
+    tft.fillCircle(10, 14, 4, COL_GREEN);
+    drawRadioDirectText(20, 6, "RADIO SCOPE", COL_GREEN, 0x0184);
+
+    tft.drawRoundRect(10, 42, 300, 132, 5, COL_GRID);
+    tft.drawRect(18, 58, 284, 96, 0x02A0);
+
+    tft.fillRect(0, 218, SCREEN_W, 22, 0x0184);
+    tft.drawFastHLine(0, 217, SCREEN_W, COL_GRID);
+}
+
+void drawRadioScopeDirectDynamic() {
+    restoreTftBus();
+
+    const int plotX = 18;
+    const int plotY = 58;
+    const int plotW = 284;
+    const int plotH = 96;
+
+    tft.fillRect(218, 4, 96, 20, 0x0184);
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextSize(1);
+    tft.setTextColor(COL_CYAN, 0x0184);
+    tft.drawString(radioPaused ? "paused" : "live", 314, 6, 2);
+    tft.setTextDatum(TL_DATUM);
+
+    tft.fillRect(plotX + 1, plotY + 1, plotW - 2, plotH - 2, COL_BG);
+    for (int i = 1; i < 4; i++) {
+        int y = plotY + (plotH * i) / 4;
+        for (int x = plotX + 2; x < plotX + plotW - 2; x += 6) {
+            tft.drawPixel(x, y, COL_GRID);
+        }
+    }
+
+    uint16_t peak = 0;
+    uint8_t peakCh = 0;
+    for (uint8_t ch = 0; ch < 80; ch++) {
+        if (radioBars[ch] > peak) {
+            peak = radioBars[ch];
+            peakCh = ch;
+        }
+        const int x = plotX + 2 + (ch * (plotW - 4)) / 80;
+        const int h = map(radioBars[ch], 0, 100, 1, plotH - 5);
+        const uint16_t color = radioBars[ch] > 65 ? COL_RED : (radioBars[ch] > 32 ? COL_AMBER : COL_GREEN);
+        tft.drawFastVLine(x, plotY + plotH - 2 - h, h, color);
+    }
+
+    tft.fillRect(14, 160, 294, 54, COL_BG);
+    drawRadioDirectText(18, 164, String("NRF1 ") + (radio1Ready ? "OK" : "MISS") + "  NRF2 " + (radio2Ready ? "OK" : "MISS"), COL_CYAN);
+    drawRadioDirectText(18, 184, String("Peak CH ") + peakCh + "  Energy " + peak + "%", peak > 65 ? COL_RED : COL_GREEN);
+    drawRadioDirectText(180, 184, radioPaused ? "OK resume" : "OK pause", COL_AMBER);
+    drawRadioDirectText(18, 202, String("Samples ") + radioScanTicks + "  CH " + radioScanChannel, COL_MUTED);
+
+    tft.fillRect(0, 218, SCREEN_W, 22, 0x0184);
+    tft.drawFastHLine(0, 217, SCREEN_W, COL_GRID);
+    drawRadioDirectText(8, 221, "OK PAUSE/RESUME  BACK EXIT", COL_MUTED, 0x0184);
+}
+
+void runRadioScopeApp() {
+    currentScreen = Screen::RadioScope;
+    radioScanArmed = true;
+    radioPaused = false;
+    memset(radioBars, 0, sizeof(radioBars));
+    radioScanChannel = 0;
+    radioScanTicks = 0;
+    lastRadioMs = 0;
+    setStatus(beginRadios() ? "Radio scope running" : "NRF not detected");
+
+    drawRadioScopeDirectFrame();
+    drawRadioScopeDirectDynamic();
+
+    uint32_t lastDraw = 0;
+    bool running = true;
+    while (running) {
+        AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) {
+            running = false;
+            break;
+        }
+
+        if (action == AppAction::Select) {
+            radioPaused = !radioPaused;
+            setStatus(radioPaused ? "Radio scope paused" : "Radio scope running");
+            toneClick(2200, 12);
+            drawRadioScopeDirectDynamic();
+        }
+
+        if (!radioPaused) {
+            scanRadioBurst(18);
+        }
+
+        uint32_t now = millis();
+        if (now - lastDraw >= 55) {
+            lastDraw = now;
+            drawRadioScopeDirectDynamic();
+        }
+
+        delay(2);
+    }
+
+    if (radio1Ready) radio1.stopListening();
+    if (radio2Ready) radio2.stopListening();
+    digitalWrite(CD_NRF1_CE, LOW);
+    digitalWrite(CD_NRF2_CE, LOW);
+    digitalWrite(CD_NRF1_CSN, HIGH);
+    digitalWrite(CD_NRF2_CSN, HIGH);
+
+    radioScanArmed = false;
+    radioPaused = false;
+    currentScreen = Screen::Home;
+    setStatus("Ready");
+    toneClick(1600, 10);
+    restoreTftBus();
+    drawHome();
+    pushFrame();
+}
+
+String pinToString(const uint8_t* digits) {
+    String out;
+    for (uint8_t i = 0; i < 4; i++) out += String(digits[i]);
+    return out;
+}
+
+void drawPasscodeEditor(const uint8_t* digits, uint8_t cursor) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("PASSCODE SIM", "setup");
+
+    drawText(12, 38, "Set a 4 digit DEMO PIN for the video.", COL_CYAN);
+    drawText(12, 58, "This only animates the TFT screen.", COL_MUTED);
+
+    const int startX = 34;
+    for (uint8_t i = 0; i < 4; i++) {
+        const int x = startX + i * 66;
+        const bool selected = i == cursor;
+        const uint16_t border = selected ? COL_GREEN : COL_GRID;
+        const uint16_t bg = selected ? 0x0340 : COL_BG;
+        frame.fillRoundRect(x, 92, 52, 66, 5, bg);
+        frame.drawRoundRect(x, 92, 52, 66, 5, border);
+        frame.setTextDatum(MC_DATUM);
+        frame.setTextSize(3);
+        frame.setTextColor(COL_TEXT, bg);
+        frame.drawString(String(digits[i]), x + 26, 125, 2);
+        frame.setTextDatum(TL_DATUM);
+    }
+
+    drawText(20, 174, "UP/DOWN or encoder changes digit", COL_MUTED);
+    drawText(20, 192, "OK next/start  BACK exit", COL_AMBER);
+    drawFooter("SIMULATION ONLY  NO HID  NO REAL UNLOCK");
+    pushFrame();
+}
+
+void drawPasscodeRunFrame(const uint8_t* digits, uint32_t startMs, uint32_t attempts) {
+    const uint32_t elapsed = millis() - startMs;
+    const int progress = constrain((int)((elapsed * 100UL) / 15000UL), 0, 100);
+
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("PASSCODE SIM", "running");
+
+    frame.drawRoundRect(10, 38, 300, 134, 5, COL_GRID);
+    frame.fillRect(16, 44, 288, 122, 0x0004);
+
+    drawText(22, 50, "ATTEMPT STREAM", COL_GREEN);
+    drawText(210, 50, String(progress) + "%", COL_CYAN);
+
+    for (uint8_t row = 0; row < 7; row++) {
+        char line[42];
+        const uint16_t value = random(0, 10000);
+        const uint32_t id = attempts + row;
+        snprintf(line, sizeof(line), "#%05lu  TRY %04u  HASH %04X",
+                 (unsigned long)id, value, (unsigned int)((value * 73 + id) & 0xFFFF));
+        drawText(24, 72 + row * 13, line, row == 6 ? COL_AMBER : COL_MUTED);
+    }
+
+    drawBar(18, 178, 284, 12, progress, COL_GREEN);
+    drawText(18, 196, String("Target searching: "));
+    drawFooter("BACK CANCEL  CINEMATIC LOCAL SIM");
+    pushFrame();
+}
+
+void drawPasscodeFound(const uint8_t* digits) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("PASSCODE SIM", "complete");
+
+    frame.drawRoundRect(22, 42, 116, 154, 10, COL_GRID);
+    frame.fillRoundRect(30, 54, 100, 126, 8, 0x0208);
+    frame.drawFastHLine(58, 64, 44, COL_MUTED);
+    frame.fillCircle(80, 156, 7, COL_GREEN);
+
+    frame.setTextDatum(MC_DATUM);
+    frame.setTextSize(2);
+    frame.setTextColor(COL_GREEN, 0x0208);
+    frame.drawString("UNLOCK", 80, 96, 2);
+    frame.setTextSize(1);
+    frame.drawString("SIM", 80, 126, 2);
+    frame.setTextDatum(TL_DATUM);
+
+    drawText(156, 54, "CODE FOUND", COL_GREEN, 2);
+    drawText(156, 88, "PIN DEMO", COL_MUTED);
+
+    frame.setTextDatum(TL_DATUM);
+    frame.setTextSize(3);
+    frame.setTextColor(COL_TEXT, COL_BG);
+    frame.drawString(pinToString(digits), 156, 108, 2);
+    frame.setTextSize(1);
+
+    drawText(156, 162, "The device did not type anything.", COL_CYAN);
+    drawText(156, 180, "Screen-only effect for ethical demos.", COL_MUTED);
+    drawFooter("OK/BACK RETURN");
+    pushFrame();
+}
+
+void runPasscodeSimApp() {
+    currentScreen = Screen::PasscodeSim;
+    uint8_t digits[4] = {9, 7, 6, 4};
+
+    toneClick(3200, 18);
+    setStatus("Passcode sim running");
+
+    randomSeed((uint32_t)micros() ^ analogRead(CD_VBAT_ADC));
+    const uint32_t startMs = millis();
+    uint32_t attempts = 0;
+    while (millis() - startMs < 15000UL) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+
+        drawPasscodeRunFrame(digits, startMs, attempts);
+        attempts += 7;
+        delay(145);
+    }
+
+    toneClick(3600, 35);
+    delay(60);
+    toneClick(4200, 45);
+    drawPasscodeFound(digits);
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect || action == AppAction::Select) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+        delay(5);
+    }
+}
+
+void drawHidDemoScreen(const char* tag, const String& line1, const String& line2, int progress) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("HID DEMO", tag);
+
+    frame.drawRoundRect(10, 38, 300, 138, 5, COL_GRID);
+    frame.fillRect(16, 44, 288, 126, 0x0004);
+
+    drawText(24, 54, "TECLADO HID SEGURO", COL_GREEN, 1);
+    drawText(24, 78, line1, COL_CYAN, 1);
+    drawText(24, 100, line2, COL_MUTED, 1);
+
+    frame.drawRoundRect(30, 130, 260, 18, 4, COL_GREEN);
+    frame.fillRect(34, 134, ((252 * constrain(progress, 0, 100)) / 100), 10, COL_GREEN);
+
+    drawText(18, 186, "Solo corre con confirmacion fisica.", COL_AMBER, 1);
+    drawFooter("OK INICIAR  BACK CANCELAR");
+    pushFrame();
+}
+
+void hidComboWinR() {
+    HidKeyboard.press(KEY_LEFT_GUI);
+    delay(40);
+    HidKeyboard.press('r');
+    delay(80);
+    HidKeyboard.releaseAll();
+    delay(450);
+}
+
+void hidTypeSlow(const char* text, uint16_t charDelay = 24) {
+    for (const char* p = text; *p; p++) {
+        HidKeyboard.write(*p);
+        delay(charDelay);
+    }
+}
+
+void hidTypeLine(const char* text, uint16_t charDelay = 24) {
+    hidTypeSlow(text, charDelay);
+    HidKeyboard.write(KEY_RETURN);
+    delay(260);
+}
+
+void hidOpenRun(const char* command, uint16_t waitMs = 900) {
+    hidComboWinR();
+    hidTypeLine(command, 24);
+    delay(waitMs);
+}
+
+void hidOpenStartSearch(const char* query, uint16_t waitMs = 1200) {
+    HidKeyboard.press(KEY_LEFT_GUI);
+    delay(80);
+    HidKeyboard.releaseAll();
+    delay(420);
+    hidTypeLine(query, 24);
+    delay(waitMs);
+}
+
+void hidConsumerTap(uint16_t key) {
+    HidConsumer.press(key);
+    delay(80);
+    HidConsumer.release();
+    delay(180);
+}
+
+void hidSendCtrlC() {
+    HidKeyboard.press(KEY_LEFT_CTRL);
+    delay(35);
+    HidKeyboard.press('c');
+    delay(90);
+    HidKeyboard.releaseAll();
+    delay(260);
+}
+
+struct HidPadEntry {
+    const char* title;
+    const char* subtitle;
+    uint8_t action;
+};
+
+enum HidPadAction : uint8_t {
+    HID_ACT_BACK = 0,
+    HID_ACT_APPS,
+    HID_ACT_CMD,
+    HID_ACT_PS,
+    HID_ACT_MEDIA,
+    HID_ACT_GUIDED_DEMO,
+    HID_ACT_OPEN_CMD,
+    HID_ACT_OPEN_PS,
+    HID_ACT_OPEN_OPERA,
+    HID_ACT_OPEN_PAINT,
+    HID_ACT_OPEN_NOTEPAD,
+    HID_ACT_OPEN_CALC,
+    HID_ACT_TYPE_CMD,
+    HID_ACT_TYPE_PS,
+    HID_ACT_MEDIA_PLAY,
+    HID_ACT_MEDIA_NEXT,
+    HID_ACT_MEDIA_PREV,
+    HID_ACT_MEDIA_STOP,
+    HID_ACT_MEDIA_VOL_UP,
+    HID_ACT_MEDIA_VOL_DOWN,
+    HID_ACT_MEDIA_MUTE,
+    HID_ACT_MEDIA_VOLUME,
+    HID_ACT_CTRL_C
+};
+
+const HidPadEntry HID_MAIN_MENU[] = {
+    {"ABRIR APPS", "CMD, PowerShell, Opera GX, Paint", HID_ACT_APPS},
+    {"CMD TOOLS", "Abre CMD y muestra comandos", HID_ACT_CMD},
+    {"POWERSHELL", "Abre PS y muestra comandos", HID_ACT_PS},
+    {"MULTIMEDIA", "YouTube, musica y volumen", HID_ACT_MEDIA},
+    {"DEMO GUIADO", "Secuencia automatica segura", HID_ACT_GUIDED_DEMO},
+    {"VOLVER", "Regresar al launcher", HID_ACT_BACK},
+};
+
+const HidPadEntry HID_APPS_MENU[] = {
+    {"CMD", "Abrir simbolo del sistema", HID_ACT_OPEN_CMD},
+    {"POWERSHELL", "Abrir terminal PowerShell", HID_ACT_OPEN_PS},
+    {"OPERA GX", "Buscar y abrir Opera GX", HID_ACT_OPEN_OPERA},
+    {"PAINT", "Abrir Microsoft Paint", HID_ACT_OPEN_PAINT},
+    {"BLOC NOTAS", "Abrir Notepad", HID_ACT_OPEN_NOTEPAD},
+    {"CALCULADORA", "Abrir calc", HID_ACT_OPEN_CALC},
+    {"VOLVER", "Menu HID PAD", HID_ACT_BACK},
+};
+
+const HidPadEntry HID_CMD_MENU[] = {
+    {"DETENER", "Enviar Ctrl+C", HID_ACT_CTRL_C},
+    {"cls", "Limpiar terminal", HID_ACT_TYPE_CMD},
+    {"echo CYBERDECK S3", "Banner para video", HID_ACT_TYPE_CMD},
+    {"whoami", "Mostrar usuario actual", HID_ACT_TYPE_CMD},
+    {"hostname", "Nombre del equipo", HID_ACT_TYPE_CMD},
+    {"ver", "Version de Windows", HID_ACT_TYPE_CMD},
+    {"echo %COMPUTERNAME%", "Nombre Windows", HID_ACT_TYPE_CMD},
+    {"echo %PROCESSOR_ARCHITECTURE%", "Arquitectura CPU", HID_ACT_TYPE_CMD},
+    {"echo %NUMBER_OF_PROCESSORS%", "Nucleos logicos", HID_ACT_TYPE_CMD},
+    {"ipconfig", "Configuracion de red", HID_ACT_TYPE_CMD},
+    {"netstat", "Conexiones locales", HID_ACT_TYPE_CMD},
+    {"ping 8.8.8.8", "Prueba de conexion", HID_ACT_TYPE_CMD},
+    {"tasklist", "Procesos locales", HID_ACT_TYPE_CMD},
+    {"driverquery", "Drivers instalados", HID_ACT_TYPE_CMD},
+    {"route print", "Tabla de rutas", HID_ACT_TYPE_CMD},
+    {"systeminfo", "Informacion del sistema", HID_ACT_TYPE_CMD},
+    {"VOLVER", "Menu HID PAD", HID_ACT_BACK},
+};
+
+const HidPadEntry HID_PS_MENU[] = {
+    {"DETENER", "Enviar Ctrl+C", HID_ACT_CTRL_C},
+    {"cls", "Limpiar terminal", HID_ACT_TYPE_PS},
+    {"echo CYBERDECK S3", "Banner para video", HID_ACT_TYPE_PS},
+    {"whoami", "Mostrar usuario actual", HID_ACT_TYPE_PS},
+    {"hostname", "Nombre del equipo", HID_ACT_TYPE_PS},
+    {"ver", "Version de Windows", HID_ACT_TYPE_PS},
+    {"ipconfig", "Configuracion de red", HID_ACT_TYPE_PS},
+    {"netstat", "Conexiones locales", HID_ACT_TYPE_PS},
+    {"tasklist", "Procesos locales", HID_ACT_TYPE_PS},
+    {"ping 8.8.8.8", "Prueba de conexion", HID_ACT_TYPE_PS},
+    {"driverquery", "Drivers instalados", HID_ACT_TYPE_PS},
+    {"systeminfo", "Informacion del sistema", HID_ACT_TYPE_PS},
+    {"date", "Fecha local", HID_ACT_TYPE_PS},
+    {"VOLVER", "Menu HID PAD", HID_ACT_BACK},
+};
+
+const HidPadEntry HID_MEDIA_MENU[] = {
+    {"PLAY / PAUSA", "YouTube o reproductor activo", HID_ACT_MEDIA_PLAY},
+    {"SIGUIENTE", "Siguiente pista/video", HID_ACT_MEDIA_NEXT},
+    {"ANTERIOR", "Pista/video anterior", HID_ACT_MEDIA_PREV},
+    {"STOP", "Detener reproduccion", HID_ACT_MEDIA_STOP},
+    {"VOLUMEN LIVE", "UP/DOWN repetido, OK mute", HID_ACT_MEDIA_VOLUME},
+    {"VOLUMEN +", "Subir volumen", HID_ACT_MEDIA_VOL_UP},
+    {"VOLUMEN -", "Bajar volumen", HID_ACT_MEDIA_VOL_DOWN},
+    {"MUTE", "Silenciar audio", HID_ACT_MEDIA_MUTE},
+    {"VOLVER", "Menu HID PAD", HID_ACT_BACK},
+};
+
+enum BleRemoteAction : uint8_t {
+    BLE_ACT_BACK = 0,
+    BLE_ACT_PAIRING,
+    BLE_ACT_OPEN_SAFARI,
+    BLE_ACT_OPEN_NOTES,
+    BLE_ACT_OPEN_YOUTUBE,
+    BLE_ACT_OPEN_SPOTIFY,
+    BLE_ACT_OPEN_WHATSAPP,
+    BLE_ACT_OPEN_INSTAGRAM,
+    BLE_ACT_OPEN_FACEBOOK,
+    BLE_ACT_OPEN_SETTINGS,
+    BLE_ACT_OPEN_PHOTOS,
+    BLE_ACT_HOME,
+    BLE_ACT_APP_SWITCH,
+    BLE_ACT_WRITE_NOTES,
+    BLE_ACT_SAFARI_SEARCH,
+    BLE_ACT_MEDIA_MENU,
+    BLE_ACT_MEDIA_PLAY,
+    BLE_ACT_MEDIA_NEXT,
+    BLE_ACT_MEDIA_PREV,
+    BLE_ACT_MEDIA_STOP,
+    BLE_ACT_MEDIA_VOL_UP,
+    BLE_ACT_MEDIA_VOL_DOWN,
+    BLE_ACT_MEDIA_MUTE,
+    BLE_ACT_VOLUME_LIVE,
+    BLE_ACT_CAMERA_MENU,
+    BLE_ACT_CAMERA_OPEN,
+    BLE_ACT_CAMERA_PHOTO,
+    BLE_ACT_CAMERA_VIDEO_TOGGLE,
+    BLE_ACT_CAMERA_PAUSE_TOGGLE,
+    BLE_ACT_CAMERA_BURST,
+    BLE_ACT_CAMERA_TIMER,
+    BLE_ACT_CAMERA_SHORTCUT_PHOTO,
+    BLE_ACT_CAMERA_SHORTCUT_VIDEO
+};
+
+const HidPadEntry BLE_REMOTE_MENU[] = {
+    {"EMPAREJAR", "Ajustes > Bluetooth", BLE_ACT_PAIRING},
+    {"SAFARI", "Abrir por Spotlight", BLE_ACT_OPEN_SAFARI},
+    {"NOTAS", "Abrir por Spotlight", BLE_ACT_OPEN_NOTES},
+    {"YOUTUBE", "Abrir por Spotlight", BLE_ACT_OPEN_YOUTUBE},
+    {"SPOTIFY", "Abrir por Spotlight", BLE_ACT_OPEN_SPOTIFY},
+    {"WHATSAPP", "Abrir por Spotlight", BLE_ACT_OPEN_WHATSAPP},
+    {"INSTAGRAM", "Abrir por Spotlight", BLE_ACT_OPEN_INSTAGRAM},
+    {"FACEBOOK", "Abrir por Spotlight", BLE_ACT_OPEN_FACEBOOK},
+    {"CONFIGURACION", "Abrir por Spotlight", BLE_ACT_OPEN_SETTINGS},
+    {"GALERIA", "Abrir Fotos", BLE_ACT_OPEN_PHOTOS},
+    {"HOME", "Atajo Command+H", BLE_ACT_HOME},
+    {"APP SWITCH", "Atajo Command+Tab", BLE_ACT_APP_SWITCH},
+    {"TEXTO DEMO", "Escribir en Notas", BLE_ACT_WRITE_NOTES},
+    {"BUSCAR WEB", "Safari + busqueda", BLE_ACT_SAFARI_SEARCH},
+    {"MULTIMEDIA", "Play, pistas y volumen", BLE_ACT_MEDIA_MENU},
+    {"CAMARA", "Foto, video y disparo remoto", BLE_ACT_CAMERA_MENU},
+    {"VOLVER", "Regresar al launcher", BLE_ACT_BACK},
+};
+
+const HidPadEntry BLE_REMOTE_MEDIA_MENU[] = {
+    {"PLAY / PAUSA", "iPhone multimedia", BLE_ACT_MEDIA_PLAY},
+    {"SIGUIENTE", "Siguiente pista/video", BLE_ACT_MEDIA_NEXT},
+    {"ANTERIOR", "Pista/video anterior", BLE_ACT_MEDIA_PREV},
+    {"STOP", "Detener reproduccion", BLE_ACT_MEDIA_STOP},
+    {"VOLUMEN LIVE", "UP/DOWN repetido, OK mute", BLE_ACT_VOLUME_LIVE},
+    {"VOLUMEN +", "Subir volumen", BLE_ACT_MEDIA_VOL_UP},
+    {"VOLUMEN -", "Bajar volumen", BLE_ACT_MEDIA_VOL_DOWN},
+    {"MUTE", "Silenciar audio", BLE_ACT_MEDIA_MUTE},
+    {"VOLVER", "Menu iPhone Remote", BLE_ACT_BACK},
+};
+
+const HidPadEntry BLE_REMOTE_CAMERA_MENU[] = {
+    {"ABRIR CAMARA", "Spotlight: Camara", BLE_ACT_CAMERA_OPEN},
+    {"ATAJO FOTO", "Spotlight: Cyber Foto", BLE_ACT_CAMERA_SHORTCUT_PHOTO},
+    {"ATAJO VIDEO", "Spotlight: Cyber Video", BLE_ACT_CAMERA_SHORTCUT_VIDEO},
+    {"FOTO", "Disparo remoto", BLE_ACT_CAMERA_PHOTO},
+    {"VIDEO REC", "Start/stop en modo video", BLE_ACT_CAMERA_VIDEO_TOGGLE},
+    {"PAUSA VIDEO", "Espacio, si iOS soporta", BLE_ACT_CAMERA_PAUSE_TOGGLE},
+    {"BURST 3", "Tres disparos seguidos", BLE_ACT_CAMERA_BURST},
+    {"TIMER 3S", "Cuenta y dispara foto", BLE_ACT_CAMERA_TIMER},
+    {"VOLVER", "Menu iPhone Remote", BLE_ACT_BACK},
+};
+
+const char* hidCommandForEntry(const HidPadEntry& entry) {
+    if (strcmp(entry.title, "echo CYBERDECK S3") == 0) {
+        return "echo CYBERDECK S3 CONTROL LOCAL";
+    }
+    return entry.title;
+}
+
+void drawHidPadMenu(const char* title, const char* subtitle, const HidPadEntry* items,
+                    uint8_t count, uint8_t selected, uint8_t scroll) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader(title, "hid");
+    drawText(10, 36, subtitle, COL_CYAN);
+
+    const int listY = 58;
+    const int rowH = 25;
+    const uint8_t visible = 6;
+    for (uint8_t row = 0; row < visible; row++) {
+        const uint8_t idx = scroll + row;
+        const int y = listY + row * rowH;
+        if (idx >= count) break;
+
+        const bool isSelected = idx == selected;
+        const uint16_t bg = isSelected ? COL_GREEN : COL_PANEL;
+        const uint16_t fg = isSelected ? COL_BG : COL_TEXT;
+        frame.fillRoundRect(10, y, 300, 21, 4, bg);
+        frame.drawRoundRect(10, y, 300, 21, 4, isSelected ? COL_TEXT : COL_GRID);
+        drawTextOn(18, y + 2, items[idx].title, fg, bg, 1);
+        frame.setTextDatum(TR_DATUM);
+        frame.setTextColor(isSelected ? COL_BG : COL_MUTED, bg);
+        frame.drawString(items[idx].subtitle, 303, y + 2, 2);
+        frame.setTextDatum(TL_DATUM);
+    }
+
+    drawText(12, 210, "Solo en tu PC. Acciones locales seguras.", COL_AMBER);
+    drawFooter("ENC/UP/DOWN  OK EJECUTAR  BACK VOLVER");
+    pushFrame();
+}
+
+uint8_t runHidPadMenu(const char* title, const char* subtitle, const HidPadEntry* items,
+                      uint8_t count, uint8_t startSelected = 0) {
+    const uint8_t visible = 6;
+    uint8_t selected = min<uint8_t>(startSelected, count - 1);
+    uint8_t scroll = selected >= visible ? selected - visible + 1 : 0;
+    drawHidPadMenu(title, subtitle, items, count, selected, scroll);
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) return 255;
+
+        if (action == AppAction::Up) {
+            selected = (selected == 0) ? count - 1 : selected - 1;
+            toneClick();
+        } else if (action == AppAction::Down) {
+            selected = (selected + 1) % count;
+            toneClick();
+        } else if (action == AppAction::Select) {
+            toneClick(3000, 12);
+            return selected;
+        } else {
+            delay(4);
+            continue;
+        }
+
+        if (selected < scroll) scroll = selected;
+        if (selected >= scroll + visible) scroll = selected - visible + 1;
+        drawHidPadMenu(title, subtitle, items, count, selected, scroll);
+        delay(4);
+    }
+}
+
+void drawHidStatus(const char* title, const String& message, int progress = 100) {
+    drawHidDemoScreen("accion", title, message, progress);
+}
+
+void hidRunMediaAction(uint8_t action) {
+    switch (action) {
+        case HID_ACT_MEDIA_PLAY: hidConsumerTap(CONSUMER_CONTROL_PLAY_PAUSE); break;
+        case HID_ACT_MEDIA_NEXT: hidConsumerTap(CONSUMER_CONTROL_SCAN_NEXT); break;
+        case HID_ACT_MEDIA_PREV: hidConsumerTap(CONSUMER_CONTROL_SCAN_PREVIOUS); break;
+        case HID_ACT_MEDIA_STOP: hidConsumerTap(CONSUMER_CONTROL_STOP); break;
+        case HID_ACT_MEDIA_VOL_UP: hidConsumerTap(CONSUMER_CONTROL_VOLUME_INCREMENT); break;
+        case HID_ACT_MEDIA_VOL_DOWN: hidConsumerTap(CONSUMER_CONTROL_VOLUME_DECREMENT); break;
+        case HID_ACT_MEDIA_MUTE: hidConsumerTap(CONSUMER_CONTROL_MUTE); break;
+        default: break;
+    }
+}
+
+void drawHidVolumeScreen(uint8_t level, const char* lastAction) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("VOLUMEN LIVE", "media");
+
+    frame.drawRoundRect(18, 44, 284, 132, 5, COL_GRID);
+    frame.fillRect(24, 50, 272, 120, 0x0004);
+    drawText(34, 62, "Control fluido para YouTube / PC", COL_CYAN);
+    drawText(34, 88, "UP: subir    DOWN: bajar", COL_TEXT);
+    drawText(34, 108, "OK: mute     BACK: volver", COL_TEXT);
+    drawText(34, 132, lastAction, COL_AMBER);
+    drawBar(34, 150, 252, 12, level, COL_GREEN);
+
+    drawFooter("UP/DOWN VOLUMEN  OK MUTE  BACK VOLVER");
+    pushFrame();
+}
+
+void runHidVolumeControl() {
+    uint8_t level = 50;
+    const char* lastAction = "Listo para ajustar volumen";
+    drawHidVolumeScreen(level, lastAction);
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) return;
+
+        if (action == AppAction::Up) {
+            hidConsumerTap(CONSUMER_CONTROL_VOLUME_INCREMENT);
+            level = min<uint8_t>(100, level + 4);
+            lastAction = "Volumen +";
+            toneClick(2800, 10);
+        } else if (action == AppAction::Down) {
+            hidConsumerTap(CONSUMER_CONTROL_VOLUME_DECREMENT);
+            level = level < 4 ? 0 : level - 4;
+            lastAction = "Volumen -";
+            toneClick(1800, 10);
+        } else if (action == AppAction::Select) {
+            hidConsumerTap(CONSUMER_CONTROL_MUTE);
+            lastAction = "Mute enviado";
+            toneClick(3200, 12);
+        } else {
+            delay(4);
+            continue;
+        }
+
+        drawHidVolumeScreen(level, lastAction);
+        delay(4);
+    }
+}
+
+constexpr uint8_t BLE_KEY_A = 0x04;
+constexpr uint8_t BLE_KEY_1 = 0x1E;
+constexpr uint8_t BLE_KEY_ENTER = 0x28;
+constexpr uint8_t BLE_KEY_ESC = 0x29;
+constexpr uint8_t BLE_KEY_BACKSPACE = 0x2A;
+constexpr uint8_t BLE_KEY_TAB = 0x2B;
+constexpr uint8_t BLE_KEY_SPACE = 0x2C;
+constexpr uint8_t BLE_KEY_MINUS = 0x2D;
+constexpr uint8_t BLE_KEY_PERIOD = 0x37;
+constexpr uint8_t BLE_KEY_RIGHT = 0x4F;
+constexpr uint8_t BLE_KEY_LEFT = 0x50;
+constexpr uint8_t BLE_MOD_SHIFT = 0x02;
+constexpr uint8_t BLE_MOD_GUI = 0x08;
+constexpr uint16_t BLE_MEDIA_NEXT = 1 << 0;
+constexpr uint16_t BLE_MEDIA_PREV = 1 << 1;
+constexpr uint16_t BLE_MEDIA_STOP = 1 << 2;
+constexpr uint16_t BLE_MEDIA_PLAY = 1 << 3;
+constexpr uint16_t BLE_MEDIA_MUTE = 1 << 4;
+constexpr uint16_t BLE_MEDIA_VOL_UP = 1 << 5;
+constexpr uint16_t BLE_MEDIA_VOL_DOWN = 1 << 6;
+
+struct BleKeyReport {
+    uint8_t modifiers;
+    uint8_t reserved;
+    uint8_t keys[6];
+};
+
+const uint8_t BLE_REMOTE_REPORT_MAP[] = {
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x01,
+    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00,
+    0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02,
+    0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x95, 0x06,
+    0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07,
+    0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xC0,
+    0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x85, 0x02,
+    0x05, 0x0C, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01,
+    0x95, 0x10, 0x09, 0xB5, 0x09, 0xB6, 0x09, 0xB7,
+    0x09, 0xCD, 0x09, 0xE2, 0x09, 0xE9, 0x09, 0xEA,
+    0x0A, 0x23, 0x02, 0x0A, 0x24, 0x02, 0x0A, 0x25, 0x02,
+    0x0A, 0x26, 0x02, 0x0A, 0x27, 0x02, 0x0A, 0x2A, 0x02,
+    0x0A, 0xB1, 0x01, 0x0A, 0xB8, 0x01, 0x0A, 0xB7, 0x01,
+    0x81, 0x02, 0xC0
+};
+
+bool bleAsciiToKey(char c, uint8_t& usage, uint8_t& modifier) {
+    modifier = 0;
+    if (c >= 'a' && c <= 'z') {
+        usage = BLE_KEY_A + (c - 'a');
+        return true;
+    }
+    if (c >= 'A' && c <= 'Z') {
+        usage = BLE_KEY_A + (c - 'A');
+        modifier = BLE_MOD_SHIFT;
+        return true;
+    }
+    if (c >= '1' && c <= '9') {
+        usage = BLE_KEY_1 + (c - '1');
+        return true;
+    }
+    if (c == '0') {
+        usage = 0x27;
+        return true;
+    }
+    if (c == ' ') {
+        usage = BLE_KEY_SPACE;
+        return true;
+    }
+    if (c == '\n' || c == '\r') {
+        usage = BLE_KEY_ENTER;
+        return true;
+    }
+    if (c == '-') {
+        usage = BLE_KEY_MINUS;
+        return true;
+    }
+    if (c == '.') {
+        usage = BLE_KEY_PERIOD;
+        return true;
+    }
+    usage = 0;
+    return false;
+}
+
+void beginBleRemote() {
+    if (bleRemoteReady) return;
+
+    releaseFrameForBleStartup();
+    drawDirectStatus("INICIANDO BLE", "Preparando memoria Bluetooth...", COL_AMBER);
+    esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+    delay(80);
+
+    drawDirectStatus("INICIANDO BLE", "Creando dispositivo BLE...", COL_AMBER);
+    BLEDevice::init("CYBERDECK-REMOTE");
+    BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
+    bleRemoteServer = BLEDevice::createServer();
+    bleRemoteServer->setCallbacks(&bleRemoteCallbacks);
+
+    drawDirectStatus("INICIANDO BLE", "Creando servicio HID...", COL_AMBER);
+    bleRemoteHid = new BLEHIDDevice(bleRemoteServer);
+    drawDirectStatus("INICIANDO BLE", "Reporte teclado...", COL_AMBER);
+    bleRemoteKeyboardInput = bleRemoteHid->inputReport(1);
+    drawDirectStatus("INICIANDO BLE", "Reporte multimedia...", COL_AMBER);
+    bleRemoteMediaInput = bleRemoteHid->inputReport(2);
+    drawDirectStatus("INICIANDO BLE", "Datos del fabricante...", COL_AMBER);
+    BLECharacteristic* manufacturer = bleRemoteHid->manufacturer();
+    if (manufacturer) manufacturer->setValue("PepeAngell");
+    bleRemoteHid->pnp(0x02, 0x303A, 0x1002, 0x0110);
+    bleRemoteHid->hidInfo(0x00, 0x02);
+    drawDirectStatus("INICIANDO BLE", "Mapa HID...", COL_AMBER);
+    bleRemoteHid->reportMap((uint8_t*)BLE_REMOTE_REPORT_MAP, sizeof(BLE_REMOTE_REPORT_MAP));
+    drawDirectStatus("INICIANDO BLE", "Activando servicios...", COL_AMBER);
+    bleRemoteHid->startServices();
+
+    drawDirectStatus("INICIANDO BLE", "Seguridad BLE...", COL_AMBER);
+    bleRemoteSecurity = new BLESecurity();
+    bleRemoteSecurity->setAuthenticationMode(ESP_LE_AUTH_BOND);
+    bleRemoteSecurity->setCapability(ESP_IO_CAP_NONE);
+    bleRemoteSecurity->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+    bleRemoteSecurity->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+
+    drawDirectStatus("INICIANDO BLE", "Anunciando para emparejar...", COL_AMBER);
+    BLEAdvertising* advertising = BLEDevice::getAdvertising();
+    BLEAdvertisementData advData;
+    advData.setFlags(0x06);
+    advData.setAppearance(HID_KEYBOARD);
+    advData.setCompleteServices(BLEUUID((uint16_t)0x1812));
+    BLEAdvertisementData scanData;
+    scanData.setName("CYBERDECK-REMOTE");
+    advertising->setAdvertisementData(advData);
+    advertising->setScanResponseData(scanData);
+    advertising->setAdvertisementType(ADV_TYPE_IND);
+    advertising->setScanResponse(true);
+    advertising->setMinInterval(0x20);
+    advertising->setMaxInterval(0x40);
+    advertising->setMinPreferred(0x06);
+    advertising->setMinPreferred(0x12);
+    BLEDevice::startAdvertising();
+    bleRemoteReady = true;
+    recreateFrameAfterBleStartup();
+}
+
+bool bleRemoteCanSend() {
+    return bleRemoteReady && bleRemoteConnected && bleRemoteKeyboardInput && bleRemoteMediaInput;
+}
+
+void bleSendKey(uint8_t usage, uint8_t modifier = 0, uint16_t holdMs = 70) {
+    if (!bleRemoteCanSend()) return;
+    BleKeyReport report = {};
+    report.modifiers = modifier;
+    report.keys[0] = usage;
+    bleRemoteKeyboardInput->setValue((uint8_t*)&report, sizeof(report));
+    bleRemoteKeyboardInput->notify();
+    delay(holdMs);
+    memset(&report, 0, sizeof(report));
+    bleRemoteKeyboardInput->setValue((uint8_t*)&report, sizeof(report));
+    bleRemoteKeyboardInput->notify();
+    delay(110);
+}
+
+void bleTypeText(const char* text, uint16_t charDelay = 28) {
+    for (const char* p = text; *p; p++) {
+        uint8_t usage = 0;
+        uint8_t modifier = 0;
+        if (bleAsciiToKey(*p, usage, modifier)) {
+            bleSendKey(usage, modifier, 45);
+            delay(charDelay);
+        }
+    }
+}
+
+void bleSendShortcut(uint8_t modifier, uint8_t usage) {
+    bleSendKey(usage, modifier, 90);
+}
+
+void bleSendMedia(uint16_t mask) {
+    if (!bleRemoteCanSend()) return;
+    bleRemoteMediaInput->setValue((uint8_t*)&mask, sizeof(mask));
+    bleRemoteMediaInput->notify();
+    delay(80);
+    mask = 0;
+    bleRemoteMediaInput->setValue((uint8_t*)&mask, sizeof(mask));
+    bleRemoteMediaInput->notify();
+    delay(120);
+}
+
+void drawBleRemoteMenu(const char* title, const char* subtitle, const HidPadEntry* items,
+                       uint8_t count, uint8_t selected, uint8_t scroll) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader(title, bleRemoteConnected ? "ble ok" : "pair");
+    drawText(10, 36, subtitle, COL_CYAN);
+
+    const int listY = 58;
+    const int rowH = 25;
+    const uint8_t visible = 6;
+    for (uint8_t row = 0; row < visible; row++) {
+        const uint8_t idx = scroll + row;
+        const int y = listY + row * rowH;
+        if (idx >= count) break;
+
+        const bool isSelected = idx == selected;
+        const uint16_t bg = isSelected ? COL_CYAN : COL_PANEL;
+        const uint16_t fg = isSelected ? COL_BG : COL_TEXT;
+        frame.fillRoundRect(10, y, 300, 21, 4, bg);
+        frame.drawRoundRect(10, y, 300, 21, 4, isSelected ? COL_TEXT : COL_GRID);
+        drawTextOn(18, y + 2, items[idx].title, fg, bg, 1);
+        frame.setTextDatum(TR_DATUM);
+        frame.setTextColor(isSelected ? COL_BG : COL_MUTED, bg);
+        frame.drawString(items[idx].subtitle, 303, y + 2, 2);
+        frame.setTextDatum(TL_DATUM);
+    }
+
+    drawText(12, 210, bleRemoteConnected ? "iPhone conectado. Control local por BLE." : "Empareja: Bluetooth > CYBERDECK-REMOTE", COL_AMBER);
+    drawFooter("ENC/UP/DOWN  OK EJECUTAR  BACK VOLVER");
+    pushFrame();
+}
+
+uint8_t runBleRemoteMenu(const char* title, const char* subtitle, const HidPadEntry* items,
+                         uint8_t count, uint8_t startSelected = 0) {
+    const uint8_t visible = 6;
+    uint8_t selected = min<uint8_t>(startSelected, count - 1);
+    uint8_t scroll = selected >= visible ? selected - visible + 1 : 0;
+    drawBleRemoteMenu(title, subtitle, items, count, selected, scroll);
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) return 255;
+
+        if (action == AppAction::Up) {
+            selected = (selected == 0) ? count - 1 : selected - 1;
+            toneClick();
+        } else if (action == AppAction::Down) {
+            selected = (selected + 1) % count;
+            toneClick();
+        } else if (action == AppAction::Select) {
+            toneClick(3000, 12);
+            return selected;
+        } else {
+            delay(4);
+            continue;
+        }
+
+        if (selected < scroll) scroll = selected;
+        if (selected >= scroll + visible) scroll = selected - visible + 1;
+        drawBleRemoteMenu(title, subtitle, items, count, selected, scroll);
+        delay(4);
+    }
+}
+
+void drawBleStatus(const char* title, const String& line, int progress = 100) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("IPHONE REMOTE", bleRemoteConnected ? "conectado" : "espera");
+    frame.drawRoundRect(14, 42, 292, 130, 5, bleRemoteConnected ? COL_CYAN : COL_AMBER);
+    frame.fillRect(20, 48, 280, 118, 0x0004);
+    drawText(30, 62, title, bleRemoteConnected ? COL_CYAN : COL_AMBER, 1);
+    drawText(30, 88, line, COL_TEXT, 1);
+    drawText(30, 114, "CYBERDECK-REMOTE", COL_GREEN, 1);
+    drawBar(30, 142, 260, 12, progress, bleRemoteConnected ? COL_CYAN : COL_AMBER);
+    drawFooter("BACK VOLVER");
+    pushFrame();
+}
+
+bool ensureBleRemoteConnected() {
+    beginBleRemote();
+    if (bleRemoteConnected) return true;
+    drawBleStatus("Esperando iPhone", "Ajustes > Bluetooth > CYBERDECK-REMOTE", 20);
+    delay(900);
+    return false;
+}
+
+void runBlePairingScreen() {
+    beginBleRemote();
+    uint32_t lastDraw = 0;
+    while (true) {
+        if (millis() - lastDraw > 450) {
+            frame.fillSprite(COL_BG);
+            drawGrid();
+            drawHeader("EMPAREJAR iPHONE", bleRemoteConnected ? "conectado" : "anunciando");
+            frame.drawRoundRect(16, 42, 288, 140, 5, bleRemoteConnected ? COL_CYAN : COL_GREEN);
+            frame.fillRect(22, 48, 276, 128, 0x0004);
+            drawText(32, 60, "1. iPhone: Ajustes > Bluetooth", COL_CYAN);
+            drawText(32, 84, "2. Toca CYBERDECK-REMOTE", COL_TEXT);
+            drawText(32, 108, "3. Acepta el emparejamiento", COL_TEXT);
+            drawText(32, 136, bleRemoteConnected ? "Estado: conectado" : "Estado: esperando iPhone", bleRemoteConnected ? COL_GREEN : COL_AMBER);
+            drawFooter("BACK VOLVER");
+            pushFrame();
+            lastDraw = millis();
+        }
+
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect || action == AppAction::Select) return;
+        delay(5);
+    }
+}
+
+void bleOpenIphoneApp(const char* appName) {
+    if (!ensureBleRemoteConnected()) return;
+    drawBleStatus("Abriendo app", String("Spotlight: ") + appName, 45);
+    bleSendShortcut(BLE_MOD_GUI, BLE_KEY_SPACE);
+    delay(650);
+    bleTypeText(appName, 24);
+    delay(250);
+    bleSendKey(BLE_KEY_ENTER);
+    delay(650);
+}
+
+void bleWriteNotesDemo() {
+    if (!ensureBleRemoteConnected()) return;
+    drawBleStatus("Notas demo", "Abriendo Notas y escribiendo", 30);
+    bleOpenIphoneApp("Notas");
+    delay(1700);
+    bleSendShortcut(BLE_MOD_GUI, BLE_KEY_A + ('n' - 'a'));
+    delay(600);
+    bleTypeText("CYBERDECK S3 BLE REMOTE\n", 24);
+    bleTypeText("Control local por Bluetooth desde mi dispositivo.\n", 24);
+    bleTypeText("Demo segura: Ejemplo visual conceptual.\n", 24);
+    drawBleStatus("Notas demo", "Texto enviado al iPhone", 100);
+    delay(700);
+}
+
+void bleSafariSearchDemo() {
+    if (!ensureBleRemoteConnected()) return;
+    drawBleStatus("Safari demo", "Abriendo busqueda segura", 30);
+    bleOpenIphoneApp("Safari");
+    delay(1500);
+    bleSendShortcut(BLE_MOD_GUI, BLE_KEY_A + ('l' - 'a'));
+    delay(500);
+    bleTypeText("instagram.com/pepeangelll", 24);
+    bleSendKey(BLE_KEY_ENTER);
+    drawBleStatus("Safari demo", "Busqueda enviada", 100);
+    delay(700);
+}
+
+void bleOpenCameraApp() {
+    if (!ensureBleRemoteConnected()) return;
+    drawBleStatus("Camara", "Abriendo app Camara", 35);
+    bleSendShortcut(BLE_MOD_GUI, BLE_KEY_SPACE);
+    delay(650);
+    bleTypeText("Camara", 24);
+    delay(250);
+    bleSendKey(BLE_KEY_ENTER);
+    delay(900);
+}
+
+void bleRunSpotlightItem(const char* title, const char* query) {
+    if (!ensureBleRemoteConnected()) return;
+    drawBleStatus(title, String("Spotlight: ") + query, 45);
+    bleSendShortcut(BLE_MOD_GUI, BLE_KEY_SPACE);
+    delay(650);
+    bleTypeText(query, 24);
+    delay(250);
+    bleSendKey(BLE_KEY_ENTER);
+    delay(900);
+}
+
+void drawBleCameraStatus(const char* action, const String& detail, int progress = 100) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("iPHONE CAMARA", bleRemoteConnected ? "ble ok" : "pair");
+    frame.drawRoundRect(14, 38, 292, 138, 5, COL_CYAN);
+    frame.fillRect(20, 44, 280, 126, 0x0004);
+    drawText(30, 58, action, COL_CYAN, 1);
+    drawText(30, 84, detail, COL_TEXT, 1);
+    drawText(30, 112, "Volumen + actua como shutter.", COL_AMBER, 1);
+    drawBar(30, 144, 260, 12, progress, COL_CYAN);
+    drawFooter("BACK VOLVER");
+    pushFrame();
+}
+
+void bleCameraShutter(const char* label, const char* detail) {
+    if (!ensureBleRemoteConnected()) return;
+    drawBleCameraStatus(label, detail, 70);
+    bleSendMedia(BLE_MEDIA_VOL_UP);
+    toneClick(3400, 16);
+    delay(420);
+}
+
+void bleCameraShortcutPhoto() {
+    bleRunSpotlightItem("ATAJO FOTO", "Cyber Foto");
+}
+
+void bleCameraShortcutVideo() {
+    bleRunSpotlightItem("ATAJO VIDEO", "Cyber Video");
+}
+
+void bleCameraBurst() {
+    if (!ensureBleRemoteConnected()) return;
+    for (uint8_t i = 0; i < 3; i++) {
+        drawBleCameraStatus("BURST 3", String("Disparo ") + (i + 1) + "/3", 35 + i * 25);
+        bleSendMedia(BLE_MEDIA_VOL_UP);
+        toneClick(3000 + i * 220, 14);
+        delay(520);
+    }
+    drawBleCameraStatus("BURST 3", "Secuencia terminada", 100);
+    delay(450);
+}
+
+void bleCameraTimerShot() {
+    if (!ensureBleRemoteConnected()) return;
+    for (int i = 3; i > 0; i--) {
+        drawBleCameraStatus("TIMER 3S", String("Disparo en ") + i, (3 - i) * 28);
+        toneClick(1800 + i * 260, 18);
+        delay(850);
+    }
+    drawBleCameraStatus("TIMER 3S", "Disparando foto", 90);
+    bleSendMedia(BLE_MEDIA_VOL_UP);
+    toneClick(3800, 22);
+    delay(520);
+}
+
+void bleCameraPauseToggle() {
+    if (!ensureBleRemoteConnected()) return;
+    drawBleCameraStatus("PAUSA VIDEO", "Enviando Space", 75);
+    bleSendKey(BLE_KEY_SPACE);
+    delay(420);
+}
+
+void bleRunMediaAction(uint8_t action) {
+    switch (action) {
+        case BLE_ACT_MEDIA_PLAY: bleSendMedia(BLE_MEDIA_PLAY); break;
+        case BLE_ACT_MEDIA_NEXT: bleSendMedia(BLE_MEDIA_NEXT); break;
+        case BLE_ACT_MEDIA_PREV: bleSendMedia(BLE_MEDIA_PREV); break;
+        case BLE_ACT_MEDIA_STOP: bleSendMedia(BLE_MEDIA_STOP); break;
+        case BLE_ACT_MEDIA_VOL_UP: bleSendMedia(BLE_MEDIA_VOL_UP); break;
+        case BLE_ACT_MEDIA_VOL_DOWN: bleSendMedia(BLE_MEDIA_VOL_DOWN); break;
+        case BLE_ACT_MEDIA_MUTE: bleSendMedia(BLE_MEDIA_MUTE); break;
+        default: break;
+    }
+}
+
+void drawBleVolumeScreen(uint8_t level, const char* lastAction) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("iPHONE VOLUME", bleRemoteConnected ? "ble ok" : "pair");
+    frame.drawRoundRect(18, 44, 284, 132, 5, COL_GRID);
+    frame.fillRect(24, 50, 272, 120, 0x0004);
+    drawText(34, 62, "Control de volumen por Bluetooth", COL_CYAN);
+    drawText(34, 88, "UP: subir    DOWN: bajar", COL_TEXT);
+    drawText(34, 108, "OK: mute     BACK: volver", COL_TEXT);
+    drawText(34, 132, lastAction, COL_AMBER);
+    drawBar(34, 150, 252, 12, level, COL_CYAN);
+    drawFooter("UP/DOWN VOLUMEN  OK MUTE  BACK VOLVER");
+    pushFrame();
+}
+
+void runBleVolumeControl() {
+    if (!ensureBleRemoteConnected()) return;
+    uint8_t level = 50;
+    const char* lastAction = "Listo para ajustar volumen";
+    drawBleVolumeScreen(level, lastAction);
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) return;
+
+        if (action == AppAction::Up) {
+            bleSendMedia(BLE_MEDIA_VOL_UP);
+            level = min<uint8_t>(100, level + 4);
+            lastAction = "Volumen +";
+            toneClick(2800, 10);
+        } else if (action == AppAction::Down) {
+            bleSendMedia(BLE_MEDIA_VOL_DOWN);
+            level = level < 4 ? 0 : level - 4;
+            lastAction = "Volumen -";
+            toneClick(1800, 10);
+        } else if (action == AppAction::Select) {
+            bleSendMedia(BLE_MEDIA_MUTE);
+            lastAction = "Mute enviado";
+            toneClick(3200, 12);
+        } else {
+            delay(4);
+            continue;
+        }
+
+        drawBleVolumeScreen(level, lastAction);
+        delay(4);
+    }
+}
+
+void runIphoneRemoteApp() {
+    currentScreen = Screen::IphoneRemote;
+    uint8_t selected = 0;
+    uint8_t mediaSelected = 0;
+    uint8_t cameraSelected = 0;
+
+    while (true) {
+        const uint8_t idx = runBleRemoteMenu("IPHONE REMOTE", "Control remoto BLE seguro",
+                                             BLE_REMOTE_MENU, sizeof(BLE_REMOTE_MENU) / sizeof(BLE_REMOTE_MENU[0]), selected);
+        if (idx == 255) break;
+        selected = idx;
+
+        const HidPadEntry& entry = BLE_REMOTE_MENU[idx];
+        if (entry.action == BLE_ACT_BACK) break;
+
+        switch (entry.action) {
+            case BLE_ACT_PAIRING:
+                runBlePairingScreen();
+                break;
+            case BLE_ACT_OPEN_SAFARI:
+                bleOpenIphoneApp("Safari");
+                break;
+            case BLE_ACT_OPEN_NOTES:
+                bleOpenIphoneApp("Notas");
+                break;
+            case BLE_ACT_OPEN_YOUTUBE:
+                bleOpenIphoneApp("YouTube");
+                break;
+            case BLE_ACT_OPEN_SPOTIFY:
+                bleOpenIphoneApp("Spotify");
+                break;
+            case BLE_ACT_OPEN_WHATSAPP:
+                bleOpenIphoneApp("WhatsApp");
+                break;
+            case BLE_ACT_OPEN_INSTAGRAM:
+                bleOpenIphoneApp("Instagram");
+                break;
+            case BLE_ACT_OPEN_FACEBOOK:
+                bleOpenIphoneApp("Facebook");
+                break;
+            case BLE_ACT_OPEN_SETTINGS:
+                bleOpenIphoneApp("Configuracion");
+                break;
+            case BLE_ACT_OPEN_PHOTOS:
+                bleOpenIphoneApp("Fotos");
+                break;
+            case BLE_ACT_HOME:
+                if (ensureBleRemoteConnected()) {
+                    drawBleStatus("HOME", "Enviando Command+H", 80);
+                    bleSendShortcut(BLE_MOD_GUI, BLE_KEY_A + ('h' - 'a'));
+                    delay(400);
+                }
+                break;
+            case BLE_ACT_APP_SWITCH:
+                if (ensureBleRemoteConnected()) {
+                    drawBleStatus("APP SWITCH", "Enviando Command+Tab", 80);
+                    bleSendShortcut(BLE_MOD_GUI, BLE_KEY_TAB);
+                    delay(400);
+                }
+                break;
+            case BLE_ACT_WRITE_NOTES:
+                bleWriteNotesDemo();
+                break;
+            case BLE_ACT_SAFARI_SEARCH:
+                bleSafariSearchDemo();
+                break;
+            case BLE_ACT_MEDIA_MENU:
+                while (true) {
+                    const uint8_t mediaIdx = runBleRemoteMenu("iPHONE MEDIA", "Control multimedia BLE",
+                                                              BLE_REMOTE_MEDIA_MENU,
+                                                              sizeof(BLE_REMOTE_MEDIA_MENU) / sizeof(BLE_REMOTE_MEDIA_MENU[0]),
+                                                              mediaSelected);
+                    if (mediaIdx == 255) break;
+                    mediaSelected = mediaIdx;
+                    const HidPadEntry& mediaEntry = BLE_REMOTE_MEDIA_MENU[mediaIdx];
+                    if (mediaEntry.action == BLE_ACT_BACK) break;
+                    if (mediaEntry.action == BLE_ACT_VOLUME_LIVE) {
+                        runBleVolumeControl();
+                        continue;
+                    }
+                    if (ensureBleRemoteConnected()) {
+                        drawBleStatus("Multimedia", mediaEntry.title, 80);
+                        bleRunMediaAction(mediaEntry.action);
+                        delay(260);
+                    }
+                }
+                break;
+            case BLE_ACT_CAMERA_MENU:
+                while (true) {
+                    const uint8_t cameraIdx = runBleRemoteMenu("iPHONE CAMARA", "Disparador remoto BLE",
+                                                               BLE_REMOTE_CAMERA_MENU,
+                                                               sizeof(BLE_REMOTE_CAMERA_MENU) / sizeof(BLE_REMOTE_CAMERA_MENU[0]),
+                                                               cameraSelected);
+                    if (cameraIdx == 255) break;
+                    cameraSelected = cameraIdx;
+                    const HidPadEntry& cameraEntry = BLE_REMOTE_CAMERA_MENU[cameraIdx];
+                    if (cameraEntry.action == BLE_ACT_BACK) break;
+
+                    switch (cameraEntry.action) {
+                        case BLE_ACT_CAMERA_OPEN:
+                            bleOpenCameraApp();
+                            break;
+                        case BLE_ACT_CAMERA_PHOTO:
+                            bleCameraShutter("FOTO", "Disparo remoto enviado");
+                            break;
+                        case BLE_ACT_CAMERA_VIDEO_TOGGLE:
+                            bleCameraShutter("VIDEO REC", "Start/stop si estas en modo video");
+                            break;
+                        case BLE_ACT_CAMERA_SHORTCUT_PHOTO:
+                            bleCameraShortcutPhoto();
+                            break;
+                        case BLE_ACT_CAMERA_SHORTCUT_VIDEO:
+                            bleCameraShortcutVideo();
+                            break;
+                        case BLE_ACT_CAMERA_PAUSE_TOGGLE:
+                            bleCameraPauseToggle();
+                            break;
+                        case BLE_ACT_CAMERA_BURST:
+                            bleCameraBurst();
+                            break;
+                        case BLE_ACT_CAMERA_TIMER:
+                            bleCameraTimerShot();
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    currentScreen = Screen::Home;
+    setStatus("Ready");
+    drawHome();
+    pushFrame();
+}
+
+void runHidDemoApp() {
+    currentScreen = Screen::HidDemo;
+    beginHid();
+    HidKeyboard.releaseAll();
+
+    drawHidDemoScreen("listo", "Objetivo: tu propia PC Windows", "Abrira Bloc de notas y PowerShell.", 0);
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+
+        if (action == AppAction::Select || action == AppAction::LongSelect) break;
+        delay(5);
+    }
+
+    for (int i = 3; i > 0; i--) {
+        drawHidDemoScreen("cuenta", String("Iniciando en ") + i, "Deja el foco en tu PC.", (3 - i) * 33);
+        toneClick(1800 + i * 250, 20);
+        delay(750);
+    }
+
+    drawHidDemoScreen("escribiendo", "Abriendo Bloc de notas...", "Escribiendo banner seguro.", 20);
+    hidComboWinR();
+    hidTypeLine("notepad", 24);
+    delay(1200);
+    hidTypeLine("CYBERDECK S3 HID DEMO", 26);
+    hidTypeLine("Demostracion local y segura de teclado USB.", 26);
+    hidTypeLine("No descarga nada. No crea persistencia. No toca credenciales.", 26);
+    hidTypeLine("Ahora abrira PowerShell con comandos inofensivos.", 26);
+
+    drawHidDemoScreen("escribiendo", "Abriendo PowerShell...", "Ejecutando comandos locales seguros.", 45);
+    hidComboWinR();
+    hidTypeLine("powershell", 24);
+    delay(1600);
+
+    const char* commands[] = {
+        "cls",
+        "echo CYBERDECK S3 HID DEMO",
+        "echo COMANDOS LOCALES E INOFENSIVOS",
+        "whoami",
+        "hostname",
+        "ipconfig",
+        "ping 8.8.8.8",
+        "echo DEMO FINALIZADA SIN CAMBIOS EN EL SISTEMA"
+    };
+
+    const uint8_t commandCount = sizeof(commands) / sizeof(commands[0]);
+    for (uint8_t i = 0; i < commandCount; i++) {
+        drawHidDemoScreen("escribiendo", String("Comando ") + (i + 1) + "/" + commandCount, commands[i], 50 + ((i * 45) / commandCount));
+        hidTypeLine(commands[i], 24);
+        delay(i == 6 ? 1200 : 360);
+    }
+
+    drawHidDemoScreen("listo", "Demo HID finalizada.", "OK/BACK regresa al menu.", 100);
+    toneClick(3600, 35);
+    delay(80);
+    toneClick(4200, 45);
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect || action == AppAction::Select) {
+            HidKeyboard.releaseAll();
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+        delay(5);
+    }
+}
+
+void runHidPadApp() {
+    currentScreen = Screen::HidDemo;
+    beginHid();
+    HidKeyboard.releaseAll();
+
+    while (true) {
+        static uint8_t mainSelected = 0;
+        uint8_t idx = runHidPadMenu("HID PAD", "Control seguro para tu PC",
+                                    HID_MAIN_MENU, sizeof(HID_MAIN_MENU) / sizeof(HID_MAIN_MENU[0]), mainSelected);
+        if (idx == 255) break;
+        mainSelected = idx;
+
+        const uint8_t action = HID_MAIN_MENU[idx].action;
+        if (action == HID_ACT_BACK) break;
+
+        if (action == HID_ACT_APPS) {
+            uint8_t appSelected = 0;
+            while (true) {
+                uint8_t appIdx = runHidPadMenu("ABRIR APPS", "Selecciona una app local",
+                                               HID_APPS_MENU, sizeof(HID_APPS_MENU) / sizeof(HID_APPS_MENU[0]), appSelected);
+                if (appIdx == 255) break;
+                appSelected = appIdx;
+
+                const HidPadEntry& entry = HID_APPS_MENU[appIdx];
+                if (entry.action == HID_ACT_BACK) break;
+
+                drawHidStatus("Abriendo app", entry.title, 45);
+                switch (entry.action) {
+                    case HID_ACT_OPEN_CMD: hidOpenRun("cmd", 900); break;
+                    case HID_ACT_OPEN_PS: hidOpenRun("powershell", 1200); break;
+                    case HID_ACT_OPEN_OPERA: hidOpenStartSearch("Opera GX", 1800); break;
+                    case HID_ACT_OPEN_PAINT: hidOpenRun("mspaint", 1100); break;
+                    case HID_ACT_OPEN_NOTEPAD: hidOpenRun("notepad", 900); break;
+                    case HID_ACT_OPEN_CALC: hidOpenRun("calc", 900); break;
+                    default: break;
+                }
+                drawHidStatus("Listo", String(entry.title) + " enviado", 100);
+                delay(650);
+            }
+        } else if (action == HID_ACT_CMD) {
+            drawHidStatus("CMD", "Abriendo simbolo del sistema", 30);
+            hidOpenRun("cmd", 1000);
+            uint8_t cmdSelected = 0;
+            while (true) {
+                uint8_t cmdIdx = runHidPadMenu("CMD TOOLS", "Comandos seguros para CMD",
+                                               HID_CMD_MENU, sizeof(HID_CMD_MENU) / sizeof(HID_CMD_MENU[0]), cmdSelected);
+                if (cmdIdx == 255) break;
+                cmdSelected = cmdIdx;
+
+                const HidPadEntry& entry = HID_CMD_MENU[cmdIdx];
+                if (entry.action == HID_ACT_BACK) break;
+
+                if (entry.action == HID_ACT_CTRL_C) {
+                    drawHidStatus("CMD", "Enviando Ctrl+C para detener", 75);
+                    hidSendCtrlC();
+                    delay(220);
+                    continue;
+                }
+
+                const char* command = hidCommandForEntry(entry);
+                drawHidStatus("CMD", command, 75);
+                hidTypeLine(command, 24);
+                delay(380);
+            }
+        } else if (action == HID_ACT_PS) {
+            drawHidStatus("PowerShell", "Abriendo terminal", 30);
+            hidOpenRun("powershell", 1300);
+            uint8_t psSelected = 0;
+            while (true) {
+                uint8_t psIdx = runHidPadMenu("POWERSHELL", "Comandos seguros para PS",
+                                              HID_PS_MENU, sizeof(HID_PS_MENU) / sizeof(HID_PS_MENU[0]), psSelected);
+                if (psIdx == 255) break;
+                psSelected = psIdx;
+
+                const HidPadEntry& entry = HID_PS_MENU[psIdx];
+                if (entry.action == HID_ACT_BACK) break;
+
+                if (entry.action == HID_ACT_CTRL_C) {
+                    drawHidStatus("PowerShell", "Enviando Ctrl+C para detener", 75);
+                    hidSendCtrlC();
+                    delay(220);
+                    continue;
+                }
+
+                const char* command = hidCommandForEntry(entry);
+                drawHidStatus("PowerShell", command, 75);
+                hidTypeLine(command, 24);
+                delay(380);
+            }
+        } else if (action == HID_ACT_MEDIA) {
+            uint8_t mediaSelected = 0;
+            while (true) {
+                uint8_t mediaIdx = runHidPadMenu("MULTIMEDIA", "Control para YouTube y musica",
+                                                 HID_MEDIA_MENU, sizeof(HID_MEDIA_MENU) / sizeof(HID_MEDIA_MENU[0]), mediaSelected);
+                if (mediaIdx == 255) break;
+                mediaSelected = mediaIdx;
+
+                const HidPadEntry& entry = HID_MEDIA_MENU[mediaIdx];
+                if (entry.action == HID_ACT_BACK) break;
+
+                if (entry.action == HID_ACT_MEDIA_VOLUME) {
+                    runHidVolumeControl();
+                    continue;
+                }
+
+                drawHidStatus("Multimedia", entry.title, 70);
+                hidRunMediaAction(entry.action);
+                delay(300);
+            }
+        } else if (action == HID_ACT_GUIDED_DEMO) {
+            runHidDemoApp();
+            return;
+        }
+    }
+
+    HidKeyboard.releaseAll();
+    HidConsumer.release();
+    currentScreen = Screen::Home;
+    setStatus("Ready");
+    drawHome();
+    pushFrame();
+}
+
+void drawBattery() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("BATTERY METER", "1S Li-ion");
+
+    frame.drawRoundRect(26, 55, 268, 102, 6, batteryPct < 20 ? COL_RED : COL_GREEN);
+    frame.drawRect(294, 88, 12, 34, batteryPct < 20 ? COL_RED : COL_GREEN);
+    drawBar(46, 82, 228, 46, batteryPct, batteryPct < 20 ? COL_RED : COL_GREEN);
+
+    frame.setTextColor(COL_TEXT, COL_BG);
+    frame.setTextSize(2);
+    frame.setTextDatum(MC_DATUM);
+    frame.drawString(String(batteryVolts, 2) + "V", SCREEN_W / 2, 170, 2);
+    frame.setTextSize(1);
+    frame.drawString(String(batteryPct) + "% estimated from 2.2k / 1k divider", SCREEN_W / 2, 196, 2);
+    frame.setTextDatum(TL_DATUM);
+    drawFooter("BACK EXIT");
+}
+
+void drawAbout() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("ABOUT TEMPLATE", "v0.1");
+
+    drawText(12, 42, "Base for individual CYBERDECK-S3 apps.", COL_GREEN);
+    drawText(12, 66, "Pins match the finished MINI firmware.", COL_CYAN);
+    drawText(12, 92, "Controls:", COL_AMBER);
+    drawText(28, 112, "UP/DOWN + encoder: navigate", COL_TEXT);
+    drawText(28, 132, "OK or encoder SW: select", COL_TEXT);
+    drawText(28, 152, "BACK or OK hold: exit", COL_TEXT);
+    drawText(12, 184, "Next app can replace one screen or this whole launcher.", COL_MUTED);
+    drawFooter("BACK EXIT");
+}
+
+void renderCurrent() {
+    switch (currentScreen) {
+        case Screen::SystemPulse: drawSystemPulse(); break;
+        case Screen::GpsRadar: drawGpsRadar(); break;
+        case Screen::SdVault: drawSdVault(); break;
+        case Screen::RadioScope: drawRadioScope(); break;
+        case Screen::PasscodeSim: drawHome(); break;
+        case Screen::HidDemo: drawHome(); break;
+        case Screen::IphoneRemote: drawHome(); break;
+        case Screen::Battery: drawBattery(); break;
+        case Screen::About: drawAbout(); break;
+        case Screen::Home:
+        default: drawHome(); break;
+    }
+    pushFrame();
+}
+
+void goHome() {
+    currentScreen = Screen::Home;
+    setStatus("Ready");
+    toneClick(1600, 10);
+    renderCurrent();
+}
+
+void handleAction(AppAction action) {
+    if (action == AppAction::None) return;
+
+    if (currentScreen == Screen::Home) {
+        if (action == AppAction::Up) {
+            menuIndex = (menuIndex == 0) ? MENU_COUNT - 1 : menuIndex - 1;
+            toneClick();
+        } else if (action == AppAction::Down) {
+            menuIndex = (menuIndex + 1) % MENU_COUNT;
+            toneClick();
+        } else if (action == AppAction::Select) {
+            if (MENU[menuIndex].screen == Screen::GpsRadar) {
+                toneClick(3200, 18);
+                runGpsRadarApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::RadioScope) {
+                toneClick(3200, 18);
+                runRadioScopeApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::PasscodeSim) {
+                runPasscodeSimApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::HidDemo) {
+                runHidPadApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::IphoneRemote) {
+                runIphoneRemoteApp();
+                return;
+            } else {
+                currentScreen = MENU[menuIndex].screen;
+                setStatus("Opened app");
+            }
+            toneClick(3200, 18);
+        }
+        renderCurrent();
+        return;
+    }
+
+    if (action == AppAction::Back || action == AppAction::LongSelect) {
+        goHome();
+        return;
+    }
+
+    if (currentScreen == Screen::GpsRadar && action == AppAction::Select) {
+        saveGpsSnapshot();
+        toneClick(3000, 18);
+        renderCurrent();
+        return;
+    }
+
+    if (currentScreen == Screen::SdVault && action == AppAction::Select) {
+        ensureSdFolders();
+        toneClick(3000, 18);
+        renderCurrent();
+        return;
+    }
+
+    if (currentScreen == Screen::RadioScope && action == AppAction::Select) {
+        radioPaused = !radioPaused;
+        setStatus(radioPaused ? "Radio scope paused" : "Radio scope running");
+        toneClick(2200, 18);
+        renderCurrent();
+    }
+}
+
+void setupPins() {
+    pinMode(CD_TFT_CS, OUTPUT);
+    digitalWrite(CD_TFT_CS, HIGH);
+    pinMode(CD_NRF1_CSN, OUTPUT);
+    digitalWrite(CD_NRF1_CSN, HIGH);
+    pinMode(CD_NRF2_CSN, OUTPUT);
+    digitalWrite(CD_NRF2_CSN, HIGH);
+    pinMode(CD_NRF1_CE, OUTPUT);
+    digitalWrite(CD_NRF1_CE, LOW);
+    pinMode(CD_NRF2_CE, OUTPUT);
+    digitalWrite(CD_NRF2_CE, LOW);
+    pinMode(CD_VBAT_ADC, INPUT);
+    analogSetPinAttenuation(CD_VBAT_ADC, ADC_11db);
+
+    if (CD_TFT_BL >= 0) {
+        pinMode(CD_TFT_BL, OUTPUT);
+        digitalWrite(CD_TFT_BL, HIGH);
+    }
+
+    pinMode(CD_BUZZER, OUTPUT);
+    ledcSetup(0, 2400, 8);
+    ledcAttachPin(CD_BUZZER, 0);
+    ledcWriteTone(0, 0);
+}
+
+}  // namespace
+
+void setup() {
+    Serial.begin(115200);
+    bootMs = millis();
+
+    setupPins();
+    inputBegin();
+    beginGps();
+
+    pinMode(CD_TFT_RST, OUTPUT);
+    digitalWrite(CD_TFT_RST, LOW);
+    delay(80);
+    digitalWrite(CD_TFT_RST, HIGH);
+    delay(120);
+
+    SPI.begin(CD_SPI_SCK, CD_SPI_MISO, CD_SPI_MOSI);
+    tft.begin();
+    tft.invertDisplay(false);
+    tft.setRotation(3);
+    tft.fillScreen(TFT_BLACK);
+
+    frame.setColorDepth(FRAME_COLOR_DEPTH);
+    frameReady = frame.createSprite(SCREEN_W, SCREEN_H) != nullptr;
+    if (!frameReady) {
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.drawString("Sprite alloc failed", 12, 12, 2);
+        return;
+    }
+
+    drawBoot();
+    batteryVolts = readBatteryVolts();
+    batteryPct = batteryPercent(batteryVolts);
+    beginSdCard();
+    beginRadios();
+    setStatus("Template ready");
+    renderCurrent();
+}
+
+void loop() {
+    updateSensors();
+    if (currentScreen == Screen::RadioScope) scanRadioBurst(14);
+
+    const AppAction action = inputRead();
+    handleAction(action);
+
+    const uint16_t interval = (currentScreen == Screen::RadioScope) ? 90 : 350;
+    if (millis() - lastRenderMs >= interval) {
+        lastRenderMs = millis();
+        renderCurrent();
+    }
+
+    delay(4);
+}

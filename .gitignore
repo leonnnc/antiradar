@@ -1,0 +1,42 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# VS Code generated local settings
+.vscode/
+
+# Build artifacts
+*.o
+*.a
+*.elf
+*.hex
+*.map
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+
+# Logs
+*.log
+
+# Python helpers
+__pycache__/
+*.pyc
+*.pyo
+
+# Backups
+*.BACKUP
+*.bak
+
+# Allow future web-flasher firmware artifacts
+!firmware/
+!firmware/firmware-merged.bin

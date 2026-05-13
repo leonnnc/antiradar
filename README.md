@@ -1,0 +1,295 @@
+# IPHONE-CONTROL-ESP32 / CYBERDECK S3 APPS
+
+Firmware para ESP32-S3 creado para el CYBERDECK MINI de PepeAngell. El proyecto esta pensado para videos cortos de ciberseguridad, electronica y hacking etico, con pantallas llamativas y funciones reales dentro de un marco legal y responsable.
+
+El firmware combina un launcher visual, herramientas de diagnostico, control HID USB para PC, control BLE para iPhone, GPS, microSD, radio scope pasivo con nRF24 y utilidades de bateria.
+
+> Estado actual: este repositorio contiene el codigo fuente. Mas adelante se agregaran los `.bin` finales y una web flasher.
+
+## Principios del proyecto
+
+- Usar solamente dispositivos propios o autorizados.
+- Priorizar demos visuales, diagnostico y aprendizaje.
+- Evitar acciones ocultas, persistencia, robo de datos o automatizacion no consentida.
+- Requerir accion fisica del usuario para las funciones HID/BLE.
+- Mantener cada app clara, grabable y facil de explicar en video.
+
+## Hardware usado
+
+| Periferico | Funcion | GPIO |
+| --- | --- | --- |
+| TFT ST7789 240x320 SPI | SCK / MOSI / MISO | 12 / 11 / 13 |
+| TFT ST7789 240x320 SPI | CS / DC / RST | 10 / 21 / 14 |
+| nRF24 #1 | CE / CSN | 4 / 5 |
+| nRF24 #2 | CE / CSN | 6 / 7 |
+| microSD SPI dedicado | SCK / MOSI / MISO / CS | 36 / 35 / 37 / 16 |
+| GPS NEO-6M UART1 | ESP RX / ESP TX | 18 / 17 |
+| Botones | UP / DOWN / OK / BACK | 1 / 2 / 42 / 41 |
+| Encoder | CLK / DT / SW | 40 / 39 / 38 |
+| Buzzer | Signal | 15 |
+| Bateria ADC | VBAT | 9 |
+
+## Controles
+
+- `UP` y `DOWN`: mover seleccion.
+- Encoder: mover seleccion.
+- `OK`: abrir app o ejecutar accion.
+- Switch del encoder: tambien funciona como seleccion.
+- `BACK`: regresar.
+- `OK` mantenido: regreso alternativo desde menus y apps.
+
+## Apps incluidas
+
+### SYSTEM PULSE
+
+Dashboard de estado del dispositivo.
+
+- Muestra bateria y porcentaje estimado.
+- Muestra actividad GPS por caracteres procesados.
+- Muestra satelites detectados por el GPS.
+- Sirve como pantalla rapida para confirmar que el hardware esta vivo.
+
+### GPS RADAR
+
+Vista GPS redisenada para mostrar ubicacion real cuando el NEO-6M consigue fix.
+
+- Usa UART1 en `RX18 / TX17` a `9600 baud`.
+- Pausa los radios nRF24 al entrar para reducir consumo y ruido.
+- Muestra estado `sin rx`, `nmea activo` o `ubicacion real`.
+- Muestra latitud, longitud, altitud, velocidad, hora UTC, satelites, HDOP y rumbo.
+- Incluye brujula visual para rumbo cuando el GPS reporta movimiento.
+- Calcula ciudad, municipio y estado aproximado usando una base local offline.
+- Guarda snapshot en microSD con `OK` en `/APPS/GPS_SNAPSHOT.txt`.
+
+Notas sobre GPS:
+
+- El GPS no entrega nombres de ciudad; solo coordenadas. Los nombres salen de una tabla local editable en el firmware.
+- En interior es normal ver `Sats: 0`. Para fix real se recomienda ventana o cielo abierto.
+- Si `Chars` no sube rapido, revisar TX del GPS a GPIO18, GND comun, alimentacion y baudrate.
+
+### SD VAULT
+
+Herramienta de prueba y diagnostico para la tarjeta microSD.
+
+- Usa bus SPI dedicado.
+- Muestra tipo de tarjeta, velocidad de montaje y conteo basico de archivos/carpetas.
+- Crea carpetas base: `/APPS`, `/APPS/LOGS`, `/APPS/EXPORTS`.
+- Escribe archivo de prueba `/APPS/APP_TEST.txt`.
+- Sirve para validar energia, montaje FAT32 y cableado del lector.
+
+### RADIO SCOPE
+
+Monitor pasivo de actividad en 2.4 GHz usando los nRF24.
+
+- Escanea canales de forma visual.
+- Muestra barras de actividad por canal.
+- Indica canal pico y energia aproximada.
+- Permite pausar y reanudar con `OK`.
+- Es una herramienta de visualizacion/diagnostico, no transmite ni interfiere.
+
+### PASSCODE SIM
+
+Simulacion cinematica para videos.
+
+- Muestra intentos visuales durante 15 segundos.
+- Termina mostrando el PIN demo fijo `9764`.
+- No usa HID.
+- No escribe en telefonos.
+- No intenta desbloquear dispositivos reales.
+
+Esta app es solo una animacion en pantalla para explicar conceptos de forma visual y segura.
+
+### HID PAD
+
+Modo USB HID para controlar una PC propia con acciones locales y confirmadas desde el CYBERDECK.
+
+El ESP32-S3 se presenta como teclado USB y control multimedia. No ejecuta nada al conectarse; todo requiere seleccionar una opcion y presionar `OK`.
+
+Menus incluidos:
+
+- `ABRIR APPS`: abre CMD, PowerShell, Opera GX, Paint, Bloc de notas y Calculadora.
+- `CMD TOOLS`: comandos locales seguros para Windows.
+- `POWERSHELL`: comandos locales seguros para PowerShell.
+- `MULTIMEDIA`: play/pausa, siguiente, anterior, stop, mute y volumen.
+- `DEMO GUIADO`: abre Bloc de notas, escribe un texto en espanol y lanza comandos inofensivos para video.
+
+Comandos CMD incluidos:
+
+- `DETENER` envia Ctrl+C.
+- `cls`
+- `echo CYBERDECK S3`
+- `whoami`
+- `hostname`
+- `ver`
+- `echo %COMPUTERNAME%`
+- `echo %PROCESSOR_ARCHITECTURE%`
+- `echo %NUMBER_OF_PROCESSORS%`
+- `ipconfig`
+- `netstat`
+- `ping 8.8.8.8`
+- `tasklist`
+- `driverquery`
+- `route print`
+- `systeminfo`
+
+Comandos PowerShell incluidos:
+
+- `DETENER` envia Ctrl+C.
+- `cls`
+- `echo CYBERDECK S3`
+- `whoami`
+- `hostname`
+- `ver`
+- `ipconfig`
+- `netstat`
+- `tasklist`
+- `ping 8.8.8.8`
+- `driverquery`
+- `systeminfo`
+- `date`
+
+Multimedia USB:
+
+- Play / pausa.
+- Siguiente pista o video.
+- Pista o video anterior.
+- Stop.
+- Mute.
+- Volumen live para subir o bajar volumen varias veces sin salir del menu.
+
+### IPHONE REMOTE
+
+Control BLE HID para iPhone. El ESP32-S3 aparece como `CYBERDECK-REMOTE` y debe emparejarse manualmente desde `Configuracion > Bluetooth` en el iPhone.
+
+Funciones principales:
+
+- Pantalla de emparejamiento BLE.
+- Apertura de apps usando Spotlight.
+- Control multimedia.
+- Control de volumen live.
+- Acciones de camara.
+- Escritura de texto demo en Notas.
+- Busqueda web segura para video.
+
+Apps que puede abrir por Spotlight:
+
+- Safari.
+- Notas.
+- YouTube.
+- Spotify.
+- WhatsApp.
+- Instagram.
+- Facebook.
+- Configuracion.
+- Galeria / Fotos.
+
+Acciones iPhone:
+
+- `HOME` por atajo compatible.
+- `APP SWITCH` por atajo compatible.
+- `TEXTO DEMO`: abre Notas y escribe una demostracion segura.
+- `BUSCAR WEB`: abre Safari y envia una busqueda/URL segura.
+- `MULTIMEDIA`: play/pausa, siguiente, anterior, stop, mute y volumen.
+
+Camara iPhone:
+
+- Abrir Camara.
+- Disparo remoto de foto usando evento de volumen.
+- Start/stop de video usando evento de volumen.
+- Pausa de video si iOS lo permite.
+- Burst de 3 fotos.
+- Timer de 3 segundos.
+- Atajos `Cyber Foto` y `Cyber Video` por Spotlight para cambiar de modo de forma confiable usando Shortcuts de iOS.
+
+Limites intencionales:
+
+- No desbloquea iPhones.
+- No prueba PINs.
+- No salta permisos.
+- Requiere emparejamiento aceptado por el usuario.
+
+### BATTERY METER
+
+Medidor visual de bateria Li-ion 1S.
+
+- Lee `VBAT` por ADC en GPIO9.
+- Usa divisor resistivo 2.2k / 1k.
+- Muestra voltaje aproximado.
+- Calcula porcentaje estimado entre 3.25 V y 4.20 V.
+
+### ABOUT TEMPLATE
+
+Pantalla de referencia del proyecto.
+
+- Resume controles.
+- Indica que este firmware sirve como base para nuevas apps individuales.
+- Mantiene el layout visual y las APIs comunes del launcher.
+
+## Estructura del proyecto
+
+```text
+include/CyberdeckPins.h  Pines del hardware
+include/AppInput.h       API comun de botones y encoder
+src/AppInput.cpp         Lectura de botones, encoder, debounce y long press
+src/main.cpp             Launcher, apps visuales, GPS, SD, HID USB y BLE
+platformio.ini           Configuracion ESP32-S3, TFT_eSPI, librerias y USB HID
+```
+
+## Dependencias
+
+El proyecto usa PlatformIO con Arduino framework para ESP32-S3.
+
+Librerias principales:
+
+- `TFT_eSPI`
+- `RF24`
+- `ArduinoJson`
+- `TinyGPSPlus`
+- `USB`
+- `ESP32 BLE Arduino`
+- `SD`
+- `SPI`
+
+## Compilar
+
+```powershell
+pio run
+```
+
+## Subir al ESP32-S3
+
+```powershell
+pio run -t upload
+```
+
+## Configuracion de pantalla
+
+La pantalla usada es una ST7789 SPI de 2.8 pulgadas con resolucion 240x320. El firmware dibuja en orientacion horizontal con un canvas de 320x240.
+
+Parametros importantes en `platformio.ini`:
+
+- `ST7789_DRIVER`
+- `TFT_WIDTH=240`
+- `TFT_HEIGHT=320`
+- `TFT_MISO=13`
+- `TFT_MOSI=11`
+- `TFT_SCLK=12`
+- `TFT_CS=10`
+- `TFT_DC=21`
+- `TFT_RST=14`
+- `TFT_INVERSION_OFF=1`
+
+## Roadmap
+
+- Generar binario final para flasheo.
+- Crear web flasher para instalar el firmware desde navegador.
+- Agregar mas apps individuales para video.
+- Mejorar GPS con auto-baud y mas ciudades/municipios.
+- Agregar capturas/fotos del dispositivo al README.
+- Crear versiones por app para demos cortas.
+
+## Nota etica
+
+Este firmware esta disenado para aprendizaje, diagnostico, electronica, accesibilidad, control local y demostraciones de ciberseguridad defensiva. Usalo solamente en tus propios equipos, redes y laboratorios, o con autorizacion explicita.
+
+No esta pensado para acceso no autorizado, robo de informacion, evasion de seguridad, persistencia, interferencia de radio o automatizacion contra terceros.
