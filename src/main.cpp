@@ -1349,6 +1349,21 @@ uint8_t wifiRssiPct(int32_t rssi) {
     return (uint8_t)map(rssi, -95, -35, 0, 100);
 }
 
+uint16_t wifiEstimateMeters(int32_t rssi) {
+    if (rssi < -120) return 0;
+    const float rssiAtOneMeter = -45.0f;
+    const float pathLoss = 2.2f;
+    float meters = powf(10.0f, (rssiAtOneMeter - (float)rssi) / (10.0f * pathLoss));
+    if (meters < 1.0f) meters = 1.0f;
+    if (meters > 99.0f) meters = 99.0f;
+    return (uint16_t)roundf(meters);
+}
+
+String wifiMetersText() {
+    if (!wifiTargetSeen) return "-- m";
+    return String(wifiEstimateMeters(wifiTargetRssi)) + " m";
+}
+
 String wifiTrendText() {
     if (!wifiTargetSeen) return "BUSCANDO";
     if (wifiTrendDb >= 4) return "ACERCANDOTE";
@@ -1708,7 +1723,7 @@ void drawWifiRadar() {
     frame.drawRoundRect(154, 126, 154, 72, 5, COL_GRID);
     drawText(164, 138, wifiTrendText(), wifiTrendColor());
     drawText(164, 156, String("CH ") + wifiTargetChannel + "  Scan " + wifiScanPass, COL_MUTED);
-    drawText(164, 174, "Direccion relativa", COL_AMBER);
+    drawText(164, 174, String("Metros ~ ") + wifiMetersText(), COL_AMBER);
 
     drawWifiRadarHistory(18, 188, 124, 22);
     drawText(16, 166, "Cerca = punto al centro", COL_MUTED);

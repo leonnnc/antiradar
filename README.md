@@ -106,6 +106,7 @@ Escaner pasivo de redes WiFi con radar relativo de intensidad.
 - Permite seleccionar una red/AP especifico por BSSID.
 - Abre un radar visual donde el punto se acerca al centro cuando sube la intensidad.
 - Muestra RSSI actual, porcentaje relativo, pico de senal y tendencia.
+- Muestra distancia aproximada en metros calculada desde RSSI.
 - Indica `ACERCANDOTE`, `ALEJANDOTE`, `ESTABLE` o `BUSCANDO`.
 - Guarda historial visual de intensidad para caminar y comparar.
 - En el radar, `DOWN` abre `DIR SCAN`, un barrido por sectores.
@@ -117,7 +118,7 @@ Escaner pasivo de redes WiFi con radar relativo de intensidad.
 
 Limitacion importante:
 
-El ESP32-S3 tiene una sola antena WiFi, asi que no puede saber la direccion real exacta de una red como una brujula. El radar y `DIR SCAN` son relativos: sirven para caminar, girar, comparar intensidad y buscar el punto de mayor senal. Para direccion real se necesitaria hardware con varias antenas, antena direccional o mediciones con GPS/triangulacion mas avanzada.
+El ESP32-S3 tiene una sola antena WiFi, asi que no puede saber la direccion real exacta de una red como una brujula. El radar, los metros aproximados y `DIR SCAN` son relativos: sirven para caminar, girar, comparar intensidad y buscar el punto de mayor senal. Para direccion real o distancia exacta se necesitaria hardware con varias antenas, antena direccional o mediciones con GPS/triangulacion mas avanzada.
 
 ### SD VAULT
 
