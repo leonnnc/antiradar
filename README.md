@@ -105,6 +105,7 @@ Escaner pasivo de redes WiFi con radar relativo de intensidad.
 - Muestra lista de SSID, BSSID, canal, cifrado y RSSI.
 - Permite seleccionar una red/AP especifico por BSSID.
 - Abre un radar visual donde el punto se acerca al centro cuando sube la intensidad.
+- Usa animacion fluida con sweep continuo, glow de objetivo, anillos y barra de intensidad.
 - Muestra RSSI actual, porcentaje relativo, pico de senal y tendencia.
 - Muestra distancia aproximada en metros calculada desde RSSI.
 - Indica `ACERCANDOTE`, `ALEJANDOTE`, `ESTABLE` o `BUSCANDO`.

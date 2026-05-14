@@ -198,6 +198,8 @@ int16_t wifiHistory[WIFI_HISTORY_LEN] = {};
 uint8_t wifiHistoryHead = 0;
 uint32_t wifiScanPass = 0;
 uint32_t wifiLastTargetScanMs = 0;
+uint32_t wifiAsyncScanStartedMs = 0;
+bool wifiAsyncScanActive = false;
 
 class BleRemoteServerCallbacks : public BLEServerCallbacks {
 public:
@@ -1395,6 +1397,8 @@ void wifiResetTargetHistory() {
     memset(wifiHistory, 0, sizeof(wifiHistory));
     wifiScanPass = 0;
     wifiLastTargetScanMs = 0;
+    wifiAsyncScanActive = false;
+    wifiAsyncScanStartedMs = 0;
 }
 
 void wifiRememberSample(int32_t rssi) {
@@ -1517,13 +1521,7 @@ bool wifiScanTargetOnce(int32_t& rssiOut) {
     return found;
 }
 
-bool wifiUpdateTargetRssi(bool drawWait = false) {
-    if (!wifiTargetValid) return false;
-    if (drawWait) drawWifiScanning("Rastreando BSSID seleccionado...");
-
-    int32_t best = -127;
-    const bool found = wifiScanTargetOnce(best);
-
+void wifiApplyTargetSample(bool found, int32_t best) {
     wifiScanPass++;
     wifiLastTargetScanMs = millis();
     wifiLastTargetRssi = wifiTargetRssi;
@@ -1538,7 +1536,53 @@ bool wifiUpdateTargetRssi(bool drawWait = false) {
         wifiTrendDb = -8;
         wifiRememberSample(-100);
     }
+}
+
+bool wifiUpdateTargetRssi(bool drawWait = false) {
+    if (!wifiTargetValid) return false;
+    if (drawWait) drawWifiScanning("Rastreando BSSID seleccionado...");
+
+    int32_t best = -127;
+    const bool found = wifiScanTargetOnce(best);
+    wifiApplyTargetSample(found, best);
     return found;
+}
+
+void wifiCancelAsyncTargetScan() {
+    if (!wifiAsyncScanActive) return;
+    WiFi.scanDelete();
+    wifiAsyncScanActive = false;
+}
+
+void wifiStartAsyncTargetScan() {
+    if (!wifiTargetValid || wifiAsyncScanActive) return;
+    wifiPrepareMode();
+    WiFi.scanDelete();
+    WiFi.scanNetworks(true, true, false, 85, wifiTargetChannel);
+    wifiAsyncScanActive = true;
+    wifiAsyncScanStartedMs = millis();
+}
+
+bool wifiPollAsyncTargetScan() {
+    if (!wifiAsyncScanActive) return false;
+    int n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_RUNNING) return false;
+
+    bool found = false;
+    int32_t best = -127;
+    if (n > 0) {
+        for (int i = 0; i < n; i++) {
+            if (WiFi.BSSIDstr(i).equalsIgnoreCase(wifiTargetBssid)) {
+                best = WiFi.RSSI(i);
+                found = true;
+                break;
+            }
+        }
+    }
+    WiFi.scanDelete();
+    wifiAsyncScanActive = false;
+    wifiApplyTargetSample(found, best);
+    return true;
 }
 
 bool wifiWaitDirectionOk(const char* sector) {
@@ -1693,26 +1737,54 @@ void drawWifiRadarHistory(int x, int y, int w, int h) {
 void drawWifiRadar() {
     frame.fillSprite(COL_BG);
     drawGrid();
-    drawHeader("WIFI RADAR", wifiTargetSeen ? "rssi vivo" : "buscando");
+    drawHeader("WIFI RADAR", wifiAsyncScanActive ? "scan..." : (wifiTargetSeen ? "rssi vivo" : "buscando"));
 
     const uint8_t pct = wifiTargetSeen ? wifiRssiPct(wifiTargetRssi) : 0;
     const int cx = 76;
     const int cy = 116;
     const int maxR = 64;
-    frame.drawCircle(cx, cy, maxR, COL_GRID);
-    frame.drawCircle(cx, cy, 44, COL_GRID);
-    frame.drawCircle(cx, cy, 24, COL_GRID);
-    frame.drawFastHLine(cx - maxR, cy, maxR * 2, COL_GRID);
-    frame.drawFastVLine(cx, cy - maxR, maxR * 2, COL_GRID);
+    frame.fillCircle(cx, cy, maxR + 5, 0x0004);
+    frame.drawCircle(cx, cy, maxR, COL_CYAN);
+    frame.drawCircle(cx, cy, 48, COL_GRID);
+    frame.drawCircle(cx, cy, 32, COL_GRID);
+    frame.drawCircle(cx, cy, 16, COL_GRID);
+    for (uint8_t a = 0; a < 8; a++) {
+        const float rad = (a * 45.0f) * DEG_TO_RAD;
+        const int x = cx + cosf(rad) * maxR;
+        const int y = cy + sinf(rad) * maxR;
+        frame.drawLine(cx, cy, x, y, (a % 2 == 0) ? 0x03E0 : COL_GRID);
+    }
+
+    const float sweep = ((millis() % 2100UL) / 2100.0f) * TWO_PI;
+    const uint16_t sweepColors[] = {COL_GREEN, 0x05E0, 0x03E0, 0x02A0, 0x0180};
+    for (uint8_t t = 0; t < 5; t++) {
+        const float rad = sweep - (t * 0.16f);
+        const int x = cx + cosf(rad) * (maxR - 2);
+        const int y = cy + sinf(rad) * (maxR - 2);
+        frame.drawLine(cx, cy, x, y, sweepColors[t]);
+    }
+    const int sweepTipX = cx + cosf(sweep) * (maxR - 2);
+    const int sweepTipY = cy + sinf(sweep) * (maxR - 2);
+    frame.fillCircle(sweepTipX, sweepTipY, 2, COL_GREEN);
 
     const int dotR = map(pct, 0, 100, maxR - 5, 8);
-    const float angle = ((wifiScanPass * 37) % 360) * DEG_TO_RAD;
+    const float angle = (sweep * 0.65f) + ((wifiScanPass * 23) * DEG_TO_RAD);
     const int dx = cx + cosf(angle) * dotR;
     const int dy = cy + sinf(angle) * dotR;
     const uint16_t dotColor = wifiTargetSeen ? (pct > 70 ? COL_GREEN : (pct > 38 ? COL_AMBER : COL_RED)) : COL_RED;
+    const int pulse = 11 + ((millis() / 120) % 8);
+    frame.drawCircle(dx, dy, pulse, dotColor);
+    frame.drawCircle(dx, dy, pulse + 6, pct > 55 ? 0x03E0 : COL_GRID);
     frame.fillCircle(dx, dy, 6, dotColor);
-    frame.drawCircle(dx, dy, 10, dotColor);
-    frame.fillCircle(cx, cy, 3, COL_CYAN);
+    frame.fillCircle(cx, cy, 4, COL_CYAN);
+    frame.drawCircle(cx, cy, 7, COL_GREEN);
+    frame.setTextDatum(MC_DATUM);
+    frame.setTextSize(1);
+    frame.setTextColor(COL_MUTED, COL_BG);
+    frame.drawString("1m", cx, cy - 20, 1);
+    frame.drawString("5m", cx, cy - 36, 1);
+    frame.drawString("15m", cx, cy - 52, 1);
+    frame.setTextDatum(TL_DATUM);
 
     frame.drawRoundRect(154, 38, 154, 80, 5, COL_GRID);
     drawText(164, 50, fitGpsText(wifiSsidText(wifiTargetSsid, wifiTargetSsid[0] == '\0'), 18), COL_GREEN);
@@ -1724,43 +1796,57 @@ void drawWifiRadar() {
     drawText(164, 138, wifiTrendText(), wifiTrendColor());
     drawText(164, 156, String("CH ") + wifiTargetChannel + "  Scan " + wifiScanPass, COL_MUTED);
     drawText(164, 174, String("Metros ~ ") + wifiMetersText(), COL_AMBER);
+    drawBar(164, 190, 132, 6, pct, dotColor);
 
     drawWifiRadarHistory(18, 188, 124, 22);
-    drawText(16, 166, "Cerca = punto al centro", COL_MUTED);
+    drawText(16, 166, "Cerca = centro / glow fuerte", COL_MUTED);
     drawFooter("OK RESCAN  DOWN DIR  BACK LISTA  HOLD HOME");
     pushFrame();
 }
 
 void runWifiRadar() {
     wifiResetTargetHistory();
-    wifiUpdateTargetRssi(true);
+    wifiStartAsyncTargetScan();
     drawWifiRadar();
-    uint32_t lastScan = millis();
+    uint32_t lastDraw = 0;
 
     while (true) {
         serviceGps(4);
         const AppAction action = inputRead();
         if (action == AppAction::LongSelect) {
+            wifiCancelAsyncTargetScan();
             currentScreen = Screen::Home;
             setStatus("Ready");
             drawHome();
             pushFrame();
             return;
         }
-        if (action == AppAction::Back) return;
+        if (action == AppAction::Back) {
+            wifiCancelAsyncTargetScan();
+            return;
+        }
         if (action == AppAction::Down) {
+            wifiCancelAsyncTargetScan();
             if (runWifiDirectionScan()) return;
             drawWifiRadar();
-            lastScan = millis();
+            lastDraw = millis();
+            wifiStartAsyncTargetScan();
         } else if (action == AppAction::Select || action == AppAction::Up) {
-            wifiUpdateTargetRssi(true);
-            drawWifiRadar();
-            lastScan = millis();
+            wifiCancelAsyncTargetScan();
+            wifiStartAsyncTargetScan();
         }
-        if (millis() - lastScan > 1400) {
-            wifiUpdateTargetRssi(false);
+
+        if (wifiPollAsyncTargetScan()) {
             drawWifiRadar();
-            lastScan = millis();
+            lastDraw = millis();
+        }
+        if (!wifiAsyncScanActive && millis() - wifiLastTargetScanMs > 420) {
+            wifiStartAsyncTargetScan();
+        }
+
+        if (millis() - lastDraw >= 65) {
+            drawWifiRadar();
+            lastDraw = millis();
         }
         delay(4);
     }
