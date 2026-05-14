@@ -1799,7 +1799,6 @@ void drawWifiRadar() {
     drawBar(164, 190, 132, 6, pct, dotColor);
 
     drawWifiRadarHistory(18, 188, 124, 22);
-    drawText(16, 166, "Cerca = centro / glow fuerte", COL_MUTED);
     drawFooter("OK RESCAN  DOWN DIR  BACK LISTA  HOLD HOME");
     pushFrame();
 }
