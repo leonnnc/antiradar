@@ -5,6 +5,7 @@
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
+#include <WiFi.h>
 #include <BLEDevice.h>
 #include <BLEHIDDevice.h>
 #include <BLESecurity.h>
@@ -83,11 +84,14 @@ constexpr char GPS_PLACE_DB_PATH[] = "/APPS/GPS/places.csv";
 constexpr uint32_t GPS_PLACE_RESCAN_MS = 15000;
 constexpr float GPS_PLACE_RESCAN_KM = 1.0f;
 constexpr uint32_t GPS_PLACE_MAX_ROWS = 65000;
+constexpr uint8_t WIFI_MAX_APS = 24;
+constexpr uint8_t WIFI_HISTORY_LEN = 44;
 
 enum class Screen : uint8_t {
     Home,
     SystemPulse,
     GpsRadar,
+    WifiLocator,
     SdVault,
     RadioScope,
     PasscodeSim,
@@ -106,6 +110,7 @@ struct MenuEntry {
 const MenuEntry MENU[] = {
     {"SYSTEM PULSE", "Hardware live dashboard", Screen::SystemPulse},
     {"GPS RADAR", "Ubicacion real, altitud y lugar", Screen::GpsRadar},
+    {"WIFI LOCATOR", "Lista redes y radar RSSI", Screen::WifiLocator},
     {"SD VAULT", "microSD status and test write", Screen::SdVault},
     {"RADIO SCOPE", "Passive nRF24 2.4 GHz scan", Screen::RadioScope},
     {"PASSCODE SIM", "15 sec cinematic PIN demo", Screen::PasscodeSim},
@@ -143,6 +148,15 @@ struct GpsResolvedPlace {
     char country[18];
 };
 
+struct WifiApInfo {
+    char ssid[33];
+    char bssid[18];
+    int32_t rssi;
+    uint8_t channel;
+    uint8_t encryption;
+    bool hidden;
+};
+
 const GpsPlace GPS_PLACES[] = {
     {"Chihuahua", "Chihuahua", "Chihuahua MX", 28.6353f, -106.0889f, 65},
     {"Ciudad Juarez", "Juarez", "Chihuahua MX", 31.6904f, -106.4245f, 70},
@@ -167,6 +181,23 @@ const GpsPlace GPS_PLACES[] = {
 };
 
 GpsResolvedPlace gpsResolvedPlace = {};
+WifiApInfo wifiAps[WIFI_MAX_APS] = {};
+uint8_t wifiApCount = 0;
+uint8_t wifiListSelected = 0;
+uint8_t wifiListScroll = 0;
+bool wifiTargetValid = false;
+bool wifiTargetSeen = false;
+char wifiTargetSsid[33] = "";
+char wifiTargetBssid[18] = "";
+uint8_t wifiTargetChannel = 0;
+int32_t wifiTargetRssi = -127;
+int32_t wifiLastTargetRssi = -127;
+int32_t wifiBestRssi = -127;
+int16_t wifiTrendDb = 0;
+int16_t wifiHistory[WIFI_HISTORY_LEN] = {};
+uint8_t wifiHistoryHead = 0;
+uint32_t wifiScanPass = 0;
+uint32_t wifiLastTargetScanMs = 0;
 
 class BleRemoteServerCallbacks : public BLEServerCallbacks {
 public:
@@ -1291,6 +1322,309 @@ void runRadioScopeApp() {
     restoreTftBus();
     drawHome();
     pushFrame();
+}
+
+String wifiSsidText(const char* ssid, bool hidden) {
+    if (hidden || ssid[0] == '\0') return "<oculta>";
+    return String(ssid);
+}
+
+String wifiEncryptionText(uint8_t enc) {
+    switch (enc) {
+        case WIFI_AUTH_OPEN: return "OPEN";
+        case WIFI_AUTH_WEP: return "WEP";
+        case WIFI_AUTH_WPA_PSK: return "WPA";
+        case WIFI_AUTH_WPA2_PSK: return "WPA2";
+        case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2";
+        case WIFI_AUTH_WPA2_ENTERPRISE: return "ENT";
+        case WIFI_AUTH_WPA3_PSK: return "WPA3";
+        case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/3";
+        default: return "LOCK";
+    }
+}
+
+uint8_t wifiRssiPct(int32_t rssi) {
+    if (rssi <= -95) return 0;
+    if (rssi >= -35) return 100;
+    return (uint8_t)map(rssi, -95, -35, 0, 100);
+}
+
+String wifiTrendText() {
+    if (!wifiTargetSeen) return "BUSCANDO";
+    if (wifiTrendDb >= 4) return "ACERCANDOTE";
+    if (wifiTrendDb <= -4) return "ALEJANDOTE";
+    return "ESTABLE";
+}
+
+uint16_t wifiTrendColor() {
+    if (!wifiTargetSeen) return COL_RED;
+    if (wifiTrendDb >= 4) return COL_GREEN;
+    if (wifiTrendDb <= -4) return COL_AMBER;
+    return COL_CYAN;
+}
+
+void wifiPrepareMode() {
+    quietRadiosForGps();
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(false);
+    delay(80);
+}
+
+void wifiResetTargetHistory() {
+    wifiTargetSeen = false;
+    wifiTargetRssi = -127;
+    wifiLastTargetRssi = -127;
+    wifiBestRssi = -127;
+    wifiTrendDb = 0;
+    wifiHistoryHead = 0;
+    memset(wifiHistory, 0, sizeof(wifiHistory));
+    wifiScanPass = 0;
+    wifiLastTargetScanMs = 0;
+}
+
+void wifiRememberSample(int32_t rssi) {
+    wifiHistory[wifiHistoryHead] = (int16_t)rssi;
+    wifiHistoryHead = (wifiHistoryHead + 1) % WIFI_HISTORY_LEN;
+}
+
+void drawWifiScanning(const char* line) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("WIFI LOCATOR", "scan");
+    frame.drawRoundRect(18, 50, 284, 116, 5, COL_CYAN);
+    drawText(34, 72, line, COL_CYAN);
+    drawText(34, 98, "Modo pasivo: no conecta, no ataca.", COL_MUTED);
+    drawText(34, 124, "Usa redes propias o autorizadas.", COL_AMBER);
+    drawFooter("BACK SALIR");
+    pushFrame();
+}
+
+void wifiScanList() {
+    wifiPrepareMode();
+    drawWifiScanning("Escaneando redes WiFi...");
+    int n = WiFi.scanNetworks(false, true, false, 160);
+    if (n < 0) n = 0;
+    wifiApCount = min<uint8_t>((uint8_t)n, WIFI_MAX_APS);
+    for (uint8_t i = 0; i < wifiApCount; i++) {
+        String ssid = WiFi.SSID(i);
+        String bssid = WiFi.BSSIDstr(i);
+        ssid.toCharArray(wifiAps[i].ssid, sizeof(wifiAps[i].ssid));
+        bssid.toCharArray(wifiAps[i].bssid, sizeof(wifiAps[i].bssid));
+        wifiAps[i].rssi = WiFi.RSSI(i);
+        wifiAps[i].channel = WiFi.channel(i);
+        wifiAps[i].encryption = WiFi.encryptionType(i);
+        wifiAps[i].hidden = ssid.length() == 0;
+    }
+    WiFi.scanDelete();
+    wifiListSelected = 0;
+    wifiListScroll = 0;
+    setStatus(wifiApCount ? "WiFi scan ready" : "No WiFi networks");
+}
+
+void drawWifiList() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("WIFI LOCATOR", wifiApCount ? "elige red" : "sin redes");
+    drawText(12, 35, String("Redes: ") + wifiApCount + "  OK radar  UP/DOWN mover", COL_CYAN);
+
+    const int listY = 56;
+    const int rowH = 25;
+    const uint8_t visible = 6;
+    for (uint8_t row = 0; row < visible; row++) {
+        const uint8_t idx = wifiListScroll + row;
+        if (idx >= wifiApCount) break;
+        const int y = listY + row * rowH;
+        const bool selected = idx == wifiListSelected;
+        const uint16_t bg = selected ? COL_GREEN : COL_PANEL;
+        const uint16_t fg = selected ? COL_BG : COL_TEXT;
+        frame.fillRoundRect(10, y, 300, 21, 4, bg);
+        frame.drawRoundRect(10, y, 300, 21, 4, selected ? COL_TEXT : COL_GRID);
+        drawTextOn(16, y + 2, fitGpsText(wifiSsidText(wifiAps[idx].ssid, wifiAps[idx].hidden), 18), fg, bg, 1);
+        frame.setTextDatum(TR_DATUM);
+        frame.setTextColor(selected ? COL_BG : (wifiAps[idx].rssi > -60 ? COL_GREEN : COL_AMBER), bg);
+        frame.drawString(String(wifiAps[idx].rssi) + "dBm CH" + wifiAps[idx].channel, 303, y + 2, 2);
+        frame.setTextDatum(TL_DATUM);
+    }
+
+    if (!wifiApCount) {
+        drawText(28, 92, "No se detectaron redes.", COL_AMBER);
+        drawText(28, 116, "OK vuelve a escanear.", COL_CYAN);
+    } else {
+        const WifiApInfo& ap = wifiAps[wifiListSelected];
+        drawText(14, 210, fitGpsText(String(ap.bssid) + "  " + wifiEncryptionText(ap.encryption), 38), COL_MUTED);
+    }
+    drawFooter("OK RADAR  UP/DOWN MOVER  BACK SALIR");
+    pushFrame();
+}
+
+bool wifiUpdateTargetRssi(bool drawWait = false) {
+    if (!wifiTargetValid) return false;
+    wifiPrepareMode();
+    if (drawWait) drawWifiScanning("Rastreando BSSID seleccionado...");
+
+    int n = WiFi.scanNetworks(false, true, false, 95, wifiTargetChannel);
+    if (n < 0) n = 0;
+    bool found = false;
+    int32_t best = -127;
+    for (int i = 0; i < n; i++) {
+        if (WiFi.BSSIDstr(i).equalsIgnoreCase(wifiTargetBssid)) {
+            best = WiFi.RSSI(i);
+            found = true;
+            break;
+        }
+    }
+    WiFi.scanDelete();
+
+    wifiScanPass++;
+    wifiLastTargetScanMs = millis();
+    wifiLastTargetRssi = wifiTargetRssi;
+    wifiTargetSeen = found;
+    if (found) {
+        wifiTargetRssi = best;
+        if (wifiBestRssi < -120 || best > wifiBestRssi) wifiBestRssi = best;
+        wifiTrendDb = (wifiLastTargetRssi < -120) ? 0 : (int16_t)(best - wifiLastTargetRssi);
+        wifiRememberSample(best);
+    } else {
+        wifiTargetRssi = -127;
+        wifiTrendDb = -8;
+        wifiRememberSample(-100);
+    }
+    return found;
+}
+
+void drawWifiRadarHistory(int x, int y, int w, int h) {
+    frame.drawRect(x, y, w, h, COL_GRID);
+    for (uint8_t i = 1; i < 4; i++) {
+        const int gy = y + (h * i) / 4;
+        for (int gx = x + 2; gx < x + w - 2; gx += 5) frame.drawPixel(gx, gy, COL_GRID);
+    }
+    for (uint8_t i = 0; i < WIFI_HISTORY_LEN; i++) {
+        const uint8_t idx = (wifiHistoryHead + i) % WIFI_HISTORY_LEN;
+        if (wifiHistory[idx] == 0) continue;
+        const uint8_t pct = wifiRssiPct(wifiHistory[idx]);
+        const int px = x + 2 + (i * (w - 4)) / WIFI_HISTORY_LEN;
+        const int barH = max(1, (pct * (h - 4)) / 100);
+        const uint16_t color = pct > 70 ? COL_GREEN : (pct > 38 ? COL_AMBER : COL_RED);
+        frame.drawFastVLine(px, y + h - 2 - barH, barH, color);
+    }
+}
+
+void drawWifiRadar() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("WIFI RADAR", wifiTargetSeen ? "rssi vivo" : "buscando");
+
+    const uint8_t pct = wifiTargetSeen ? wifiRssiPct(wifiTargetRssi) : 0;
+    const int cx = 76;
+    const int cy = 116;
+    const int maxR = 64;
+    frame.drawCircle(cx, cy, maxR, COL_GRID);
+    frame.drawCircle(cx, cy, 44, COL_GRID);
+    frame.drawCircle(cx, cy, 24, COL_GRID);
+    frame.drawFastHLine(cx - maxR, cy, maxR * 2, COL_GRID);
+    frame.drawFastVLine(cx, cy - maxR, maxR * 2, COL_GRID);
+
+    const int dotR = map(pct, 0, 100, maxR - 5, 8);
+    const float angle = ((wifiScanPass * 37) % 360) * DEG_TO_RAD;
+    const int dx = cx + cosf(angle) * dotR;
+    const int dy = cy + sinf(angle) * dotR;
+    const uint16_t dotColor = wifiTargetSeen ? (pct > 70 ? COL_GREEN : (pct > 38 ? COL_AMBER : COL_RED)) : COL_RED;
+    frame.fillCircle(dx, dy, 6, dotColor);
+    frame.drawCircle(dx, dy, 10, dotColor);
+    frame.fillCircle(cx, cy, 3, COL_CYAN);
+
+    frame.drawRoundRect(154, 38, 154, 80, 5, COL_GRID);
+    drawText(164, 50, fitGpsText(wifiSsidText(wifiTargetSsid, wifiTargetSsid[0] == '\0'), 18), COL_GREEN);
+    drawText(164, 68, String(wifiTargetRssi) + " dBm  " + String(pct) + "%", wifiTargetSeen ? COL_CYAN : COL_RED);
+    drawText(164, 86, String("Peak ") + wifiBestRssi + " dBm", wifiBestRssi > -127 ? COL_GREEN : COL_MUTED);
+    drawText(164, 102, String("Trend ") + wifiTrendDb + " dB", wifiTrendColor());
+
+    frame.drawRoundRect(154, 126, 154, 72, 5, COL_GRID);
+    drawText(164, 138, wifiTrendText(), wifiTrendColor());
+    drawText(164, 156, String("CH ") + wifiTargetChannel + "  Scan " + wifiScanPass, COL_MUTED);
+    drawText(164, 174, "Direccion relativa", COL_AMBER);
+
+    drawWifiRadarHistory(18, 188, 124, 22);
+    drawText(16, 166, "Cerca = punto al centro", COL_MUTED);
+    drawFooter("OK RESCAN  BACK LISTA  HOLD HOME");
+    pushFrame();
+}
+
+void runWifiRadar() {
+    wifiResetTargetHistory();
+    wifiUpdateTargetRssi(true);
+    drawWifiRadar();
+    uint32_t lastScan = millis();
+
+    while (true) {
+        serviceGps(4);
+        const AppAction action = inputRead();
+        if (action == AppAction::LongSelect) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+        if (action == AppAction::Back) return;
+        if (action == AppAction::Select || action == AppAction::Up || action == AppAction::Down) {
+            wifiUpdateTargetRssi(true);
+            drawWifiRadar();
+            lastScan = millis();
+        }
+        if (millis() - lastScan > 1400) {
+            wifiUpdateTargetRssi(false);
+            drawWifiRadar();
+            lastScan = millis();
+        }
+        delay(4);
+    }
+}
+
+void runWifiLocatorApp() {
+    currentScreen = Screen::WifiLocator;
+    wifiScanList();
+    drawWifiList();
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+        if (action == AppAction::Up && wifiApCount) {
+            wifiListSelected = (wifiListSelected == 0) ? wifiApCount - 1 : wifiListSelected - 1;
+            toneClick();
+        } else if (action == AppAction::Down && wifiApCount) {
+            wifiListSelected = (wifiListSelected + 1) % wifiApCount;
+            toneClick();
+        } else if (action == AppAction::Select) {
+            if (!wifiApCount) {
+                wifiScanList();
+                drawWifiList();
+                continue;
+            }
+            const WifiApInfo& ap = wifiAps[wifiListSelected];
+            strlcpy(wifiTargetSsid, ap.ssid, sizeof(wifiTargetSsid));
+            strlcpy(wifiTargetBssid, ap.bssid, sizeof(wifiTargetBssid));
+            wifiTargetChannel = ap.channel;
+            wifiTargetValid = true;
+            toneClick(3200, 15);
+            runWifiRadar();
+            currentScreen = Screen::WifiLocator;
+        } else {
+            delay(4);
+            continue;
+        }
+
+        if (wifiListSelected < wifiListScroll) wifiListScroll = wifiListSelected;
+        if (wifiListSelected >= wifiListScroll + 6) wifiListScroll = wifiListSelected - 5;
+        drawWifiList();
+        delay(4);
+    }
 }
 
 String pinToString(const uint8_t* digits) {
@@ -2682,6 +3016,7 @@ void renderCurrent() {
     switch (currentScreen) {
         case Screen::SystemPulse: drawSystemPulse(); break;
         case Screen::GpsRadar: drawGpsRadar(); break;
+        case Screen::WifiLocator: drawHome(); break;
         case Screen::SdVault: drawSdVault(); break;
         case Screen::RadioScope: drawRadioScope(); break;
         case Screen::PasscodeSim: drawHome(); break;
@@ -2716,6 +3051,10 @@ void handleAction(AppAction action) {
             if (MENU[menuIndex].screen == Screen::GpsRadar) {
                 toneClick(3200, 18);
                 runGpsRadarApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::WifiLocator) {
+                toneClick(3200, 18);
+                runWifiLocatorApp();
                 return;
             } else if (MENU[menuIndex].screen == Screen::RadioScope) {
                 toneClick(3200, 18);

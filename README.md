@@ -97,6 +97,25 @@ Recomendacion para publicar el firmware:
 - Para una base grande, usar datos tipo GeoNames y generar un CSV compacto solo con columnas necesarias.
 - Si no existe `places.csv`, el firmware crea una muestra pequena automaticamente.
 
+### WIFI LOCATOR
+
+Escaner pasivo de redes WiFi con radar relativo de intensidad.
+
+- Escanea redes WiFi cercanas en modo STA.
+- Muestra lista de SSID, BSSID, canal, cifrado y RSSI.
+- Permite seleccionar una red/AP especifico por BSSID.
+- Abre un radar visual donde el punto se acerca al centro cuando sube la intensidad.
+- Muestra RSSI actual, porcentaje relativo, pico de senal y tendencia.
+- Indica `ACERCANDOTE`, `ALEJANDOTE`, `ESTABLE` o `BUSCANDO`.
+- Guarda historial visual de intensidad para caminar y comparar.
+- No se conecta a la red.
+- No intenta contrasenas.
+- No transmite paquetes de ataque.
+
+Limitacion importante:
+
+El ESP32-S3 tiene una sola antena WiFi, asi que no puede saber la direccion real exacta de una red como una brujula. El radar es relativo: sirve para caminar, girar, comparar intensidad y buscar el punto de mayor senal. Para direccion real se necesitaria hardware con varias antenas, antena direccional o mediciones con GPS/triangulacion mas avanzada.
+
 ### SD VAULT
 
 Herramienta de prueba y diagnostico para la tarjeta microSD.
