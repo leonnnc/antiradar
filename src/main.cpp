@@ -1399,6 +1399,32 @@ void drawWifiScanning(const char* line) {
     pushFrame();
 }
 
+void drawWifiDirectionPrompt(const char* sector) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("WIFI DIR SCAN", "sector");
+    frame.drawRoundRect(18, 42, 284, 142, 5, COL_CYAN);
+    drawText(34, 60, String("Apunta hacia: ") + sector, COL_GREEN);
+    drawText(34, 88, "Manten el equipo quieto.", COL_CYAN);
+    drawText(34, 112, "OK mide este sector.", COL_TEXT);
+    drawText(34, 136, "BACK cancela al radar RSSI.", COL_AMBER);
+    drawText(34, 160, fitGpsText(wifiSsidText(wifiTargetSsid, wifiTargetSsid[0] == '\0'), 28), COL_MUTED);
+    drawFooter("OK MEDIR  BACK RADAR");
+    pushFrame();
+}
+
+void drawWifiDirectionMeasure(const char* sector, uint8_t sample, uint8_t total) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("WIFI DIR SCAN", "midiendo");
+    frame.drawRoundRect(18, 52, 284, 112, 5, COL_GREEN);
+    drawText(34, 74, String("Midiendo ") + sector, COL_CYAN);
+    drawText(34, 100, String("Muestra ") + sample + "/" + total, COL_TEXT);
+    drawBar(34, 128, 252, 12, (sample * 100) / total, COL_GREEN);
+    drawFooter("NO MOVER EL EQUIPO");
+    pushFrame();
+}
+
 void wifiScanList() {
     wifiPrepareMode();
     drawWifiScanning("Escaneando redes WiFi...");
@@ -1457,11 +1483,9 @@ void drawWifiList() {
     pushFrame();
 }
 
-bool wifiUpdateTargetRssi(bool drawWait = false) {
+bool wifiScanTargetOnce(int32_t& rssiOut) {
     if (!wifiTargetValid) return false;
     wifiPrepareMode();
-    if (drawWait) drawWifiScanning("Rastreando BSSID seleccionado...");
-
     int n = WiFi.scanNetworks(false, true, false, 95, wifiTargetChannel);
     if (n < 0) n = 0;
     bool found = false;
@@ -1474,6 +1498,16 @@ bool wifiUpdateTargetRssi(bool drawWait = false) {
         }
     }
     WiFi.scanDelete();
+    rssiOut = best;
+    return found;
+}
+
+bool wifiUpdateTargetRssi(bool drawWait = false) {
+    if (!wifiTargetValid) return false;
+    if (drawWait) drawWifiScanning("Rastreando BSSID seleccionado...");
+
+    int32_t best = -127;
+    const bool found = wifiScanTargetOnce(best);
 
     wifiScanPass++;
     wifiLastTargetScanMs = millis();
@@ -1490,6 +1524,138 @@ bool wifiUpdateTargetRssi(bool drawWait = false) {
         wifiRememberSample(-100);
     }
     return found;
+}
+
+bool wifiWaitDirectionOk(const char* sector) {
+    drawWifiDirectionPrompt(sector);
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) return false;
+        if (action == AppAction::Select) {
+            toneClick(3000, 12);
+            return true;
+        }
+        delay(4);
+    }
+}
+
+bool wifiMeasureDirectionSector(const char* sector, int32_t& averageOut) {
+    const uint8_t samples = 3;
+    int32_t sum = 0;
+    uint8_t hits = 0;
+    for (uint8_t i = 0; i < samples; i++) {
+        drawWifiDirectionMeasure(sector, i + 1, samples);
+        int32_t rssi = -127;
+        if (wifiScanTargetOnce(rssi)) {
+            sum += rssi;
+            hits++;
+        }
+        delay(90);
+    }
+    if (!hits) {
+        averageOut = -127;
+        return false;
+    }
+    averageOut = sum / hits;
+    return true;
+}
+
+uint8_t wifiBestDirectionIndex(const int32_t* values, const bool* valid) {
+    uint8_t best = 255;
+    for (uint8_t i = 0; i < 4; i++) {
+        if (!valid[i]) continue;
+        if (best == 255 || values[i] > values[best]) best = i;
+    }
+    return best;
+}
+
+int32_t wifiSecondBestDirection(const int32_t* values, const bool* valid, uint8_t best) {
+    int32_t second = -127;
+    for (uint8_t i = 0; i < 4; i++) {
+        if (!valid[i] || i == best) continue;
+        if (values[i] > second) second = values[i];
+    }
+    return second;
+}
+
+String wifiDirectionConfidence(int32_t diffDb) {
+    if (diffDb >= 9) return "ALTA";
+    if (diffDb >= 5) return "MEDIA";
+    if (diffDb >= 3) return "BAJA";
+    return "INCIERTA";
+}
+
+uint16_t wifiDirectionConfidenceColor(int32_t diffDb) {
+    if (diffDb >= 9) return COL_GREEN;
+    if (diffDb >= 5) return COL_CYAN;
+    if (diffDb >= 3) return COL_AMBER;
+    return COL_RED;
+}
+
+void drawWifiDirectionResult(const int32_t* values, const bool* valid) {
+    static const char* labels[] = {"FRENTE", "DERECHA", "ATRAS", "IZQUIERDA"};
+    const uint8_t best = wifiBestDirectionIndex(values, valid);
+    const int32_t second = best == 255 ? -127 : wifiSecondBestDirection(values, valid, best);
+    const int32_t diff = best == 255 ? 0 : values[best] - second;
+
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("WIFI DIR SCAN", best == 255 ? "sin senal" : "resultado");
+
+    frame.drawRoundRect(12, 38, 296, 74, 5, best == 255 ? COL_RED : wifiDirectionConfidenceColor(diff));
+    if (best == 255) {
+        drawText(24, 58, "No se encontro el BSSID objetivo.", COL_RED);
+        drawText(24, 82, "Acercate o vuelve a escanear.", COL_AMBER);
+    } else {
+        drawText(24, 56, String("MAYOR SENAL: ") + labels[best], wifiDirectionConfidenceColor(diff));
+        drawText(24, 78, String("Confianza: ") + wifiDirectionConfidence(diff) + "  +" + diff + " dB", COL_CYAN);
+        drawText(198, 78, String(values[best]) + " dBm", COL_GREEN);
+    }
+
+    const int y0 = 126;
+    for (uint8_t i = 0; i < 4; i++) {
+        const int y = y0 + i * 21;
+        const uint16_t color = (i == best) ? COL_GREEN : (valid[i] ? COL_CYAN : COL_RED);
+        drawText(18, y, labels[i], color);
+        const uint8_t pct = valid[i] ? wifiRssiPct(values[i]) : 0;
+        drawBar(86, y + 3, 150, 9, pct, color);
+        drawText(246, y, valid[i] ? String(values[i]) + "dBm" : "--", color);
+    }
+
+    drawText(18, 212, "Tip: si es incierta, repite y gira mas lento.", COL_MUTED);
+    drawFooter("OK REPETIR  BACK RADAR  HOLD HOME");
+    pushFrame();
+}
+
+bool runWifiDirectionScan() {
+    static const char* sectors[] = {"FRENTE", "DERECHA", "ATRAS", "IZQUIERDA"};
+    int32_t values[4] = {-127, -127, -127, -127};
+    bool valid[4] = {false, false, false, false};
+
+    while (true) {
+        for (uint8_t i = 0; i < 4; i++) {
+            if (!wifiWaitDirectionOk(sectors[i])) return false;
+            valid[i] = wifiMeasureDirectionSector(sectors[i], values[i]);
+        }
+        drawWifiDirectionResult(values, valid);
+
+        while (true) {
+            const AppAction action = inputRead();
+            if (action == AppAction::LongSelect) {
+                currentScreen = Screen::Home;
+                setStatus("Ready");
+                drawHome();
+                pushFrame();
+                return true;
+            }
+            if (action == AppAction::Back) return false;
+            if (action == AppAction::Select) {
+                toneClick(3000, 12);
+                break;
+            }
+            delay(4);
+        }
+    }
 }
 
 void drawWifiRadarHistory(int x, int y, int w, int h) {
@@ -1546,7 +1712,7 @@ void drawWifiRadar() {
 
     drawWifiRadarHistory(18, 188, 124, 22);
     drawText(16, 166, "Cerca = punto al centro", COL_MUTED);
-    drawFooter("OK RESCAN  BACK LISTA  HOLD HOME");
+    drawFooter("OK RESCAN  DOWN DIR  BACK LISTA  HOLD HOME");
     pushFrame();
 }
 
@@ -1567,7 +1733,11 @@ void runWifiRadar() {
             return;
         }
         if (action == AppAction::Back) return;
-        if (action == AppAction::Select || action == AppAction::Up || action == AppAction::Down) {
+        if (action == AppAction::Down) {
+            if (runWifiDirectionScan()) return;
+            drawWifiRadar();
+            lastScan = millis();
+        } else if (action == AppAction::Select || action == AppAction::Up) {
             wifiUpdateTargetRssi(true);
             drawWifiRadar();
             lastScan = millis();

@@ -108,13 +108,16 @@ Escaner pasivo de redes WiFi con radar relativo de intensidad.
 - Muestra RSSI actual, porcentaje relativo, pico de senal y tendencia.
 - Indica `ACERCANDOTE`, `ALEJANDOTE`, `ESTABLE` o `BUSCANDO`.
 - Guarda historial visual de intensidad para caminar y comparar.
+- En el radar, `DOWN` abre `DIR SCAN`, un barrido por sectores.
+- `DIR SCAN` mide `FRENTE`, `DERECHA`, `ATRAS` e `IZQUIERDA`, compara dBm y muestra el sector con mayor senal.
+- Muestra confianza `ALTA`, `MEDIA`, `BAJA` o `INCIERTA` segun diferencia en dB.
 - No se conecta a la red.
 - No intenta contrasenas.
 - No transmite paquetes de ataque.
 
 Limitacion importante:
 
-El ESP32-S3 tiene una sola antena WiFi, asi que no puede saber la direccion real exacta de una red como una brujula. El radar es relativo: sirve para caminar, girar, comparar intensidad y buscar el punto de mayor senal. Para direccion real se necesitaria hardware con varias antenas, antena direccional o mediciones con GPS/triangulacion mas avanzada.
+El ESP32-S3 tiene una sola antena WiFi, asi que no puede saber la direccion real exacta de una red como una brujula. El radar y `DIR SCAN` son relativos: sirven para caminar, girar, comparar intensidad y buscar el punto de mayor senal. Para direccion real se necesitaria hardware con varias antenas, antena direccional o mediciones con GPS/triangulacion mas avanzada.
 
 ### SD VAULT
 
