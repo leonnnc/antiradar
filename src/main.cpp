@@ -65,6 +65,9 @@ uint32_t gpsLastUiMs = 0;
 uint32_t gpsStatsLastMs = 0;
 uint32_t gpsStatsLastChars = 0;
 uint16_t gpsCharsPerSec = 0;
+uint32_t gpsPlaceLastScanMs = 0;
+double gpsPlaceLastScanLat = 999.0;
+double gpsPlaceLastScanLng = 999.0;
 uint32_t sdMountHz = 0;
 uint32_t lastRenderMs = 0;
 uint32_t lastSensorMs = 0;
@@ -76,6 +79,10 @@ int batteryPct = 0;
 uint16_t radioBars[80] = {};
 uint8_t radioScanChannel = 0;
 char statusLine[48] = "Ready";
+constexpr char GPS_PLACE_DB_PATH[] = "/APPS/GPS/places.csv";
+constexpr uint32_t GPS_PLACE_RESCAN_MS = 15000;
+constexpr float GPS_PLACE_RESCAN_KM = 1.0f;
+constexpr uint32_t GPS_PLACE_MAX_ROWS = 65000;
 
 enum class Screen : uint8_t {
     Home,
@@ -123,6 +130,19 @@ struct GpsPlaceMatch {
     bool close;
 };
 
+struct GpsResolvedPlace {
+    bool valid;
+    bool close;
+    bool fromSd;
+    uint32_t rowsScanned;
+    float km;
+    float radiusKm;
+    char city[34];
+    char municipality[34];
+    char state[34];
+    char country[18];
+};
+
 const GpsPlace GPS_PLACES[] = {
     {"Chihuahua", "Chihuahua", "Chihuahua MX", 28.6353f, -106.0889f, 65},
     {"Ciudad Juarez", "Juarez", "Chihuahua MX", 31.6904f, -106.4245f, 70},
@@ -145,6 +165,8 @@ const GpsPlace GPS_PLACES[] = {
     {"Ascension", "Ascension", "Chihuahua MX", 31.0920f, -107.9960f, 60},
     {"Janos", "Janos", "Chihuahua MX", 30.8900f, -108.1930f, 55},
 };
+
+GpsResolvedPlace gpsResolvedPlace = {};
 
 class BleRemoteServerCallbacks : public BLEServerCallbacks {
 public:
@@ -457,6 +479,7 @@ void ensureSdFolders() {
         return;
     }
     SD.mkdir("/APPS");
+    SD.mkdir("/APPS/GPS");
     SD.mkdir("/APPS/LOGS");
     SD.mkdir("/APPS/EXPORTS");
 
@@ -741,6 +764,136 @@ float gpsDistanceKm(float lat1, float lng1, float lat2, float lng2) {
     return 6371.0f * c;
 }
 
+String gpsSignedCoordText(double value) {
+    return String(value, 6);
+}
+
+String gpsDmsText(double value, const char* positive, const char* negative) {
+    const char* hemi = value >= 0 ? positive : negative;
+    double v = fabs(value);
+    const int deg = (int)v;
+    v = (v - deg) * 60.0;
+    const int min = (int)v;
+    const double sec = (v - min) * 60.0;
+    char out[28];
+    snprintf(out, sizeof(out), "%d %02d %.2f %s", deg, min, sec, hemi);
+    return String(out);
+}
+
+void gpsCopyField(char* dst, size_t dstSize, const String& src) {
+    if (dstSize == 0) return;
+    String clean = src;
+    clean.trim();
+    clean.replace("\"", "");
+    clean.toCharArray(dst, dstSize);
+    dst[dstSize - 1] = '\0';
+}
+
+void gpsSetResolvedPlace(GpsResolvedPlace& out, const char* city, const char* municipality,
+                         const char* state, const char* country, float km, float radiusKm,
+                         bool fromSd, uint32_t rowsScanned) {
+    out.valid = true;
+    out.close = km <= radiusKm;
+    out.fromSd = fromSd;
+    out.rowsScanned = rowsScanned;
+    out.km = km;
+    out.radiusKm = radiusKm;
+    strlcpy(out.city, city ? city : "", sizeof(out.city));
+    strlcpy(out.municipality, municipality ? municipality : "", sizeof(out.municipality));
+    strlcpy(out.state, state ? state : "", sizeof(out.state));
+    strlcpy(out.country, country ? country : "", sizeof(out.country));
+}
+
+bool gpsNextCsvField(const String& line, int& start, String& out) {
+    if (start > (int)line.length()) return false;
+    int comma = line.indexOf(',', start);
+    if (comma < 0) {
+        out = line.substring(start);
+        start = line.length() + 1;
+    } else {
+        out = line.substring(start, comma);
+        start = comma + 1;
+    }
+    out.trim();
+    return true;
+}
+
+bool gpsParsePlaceCsvLine(const String& line, float& lat, float& lng,
+                          String& city, String& municipality, String& state,
+                          String& country, float& radiusKm) {
+    if (line.length() < 8 || line[0] == '#') return false;
+    String fields[7];
+    int start = 0;
+    for (uint8_t i = 0; i < 7; i++) {
+        if (!gpsNextCsvField(line, start, fields[i])) return false;
+    }
+    if (fields[0].equalsIgnoreCase("lat")) return false;
+    lat = fields[0].toFloat();
+    lng = fields[1].toFloat();
+    city = fields[2];
+    municipality = fields[3].length() ? fields[3] : fields[2];
+    state = fields[4];
+    country = fields[5];
+    radiusKm = fields[6].length() ? fields[6].toFloat() : 25.0f;
+    if (radiusKm < 1.0f) radiusKm = 1.0f;
+    return city.length() > 0 && (lat != 0.0f || lng != 0.0f);
+}
+
+void gpsWriteSamplePlaceDb() {
+    if (!beginSdCard()) return;
+    SD.mkdir("/APPS");
+    SD.mkdir("/APPS/GPS");
+    if (SD.exists(GPS_PLACE_DB_PATH)) return;
+
+    String sample;
+    sample += "lat,lng,city,municipality,state,country,radius_km\r\n";
+    sample += "28.6353,-106.0889,Chihuahua,Chihuahua,Chihuahua,Mexico,65\r\n";
+    sample += "31.6904,-106.4245,Ciudad Juarez,Juarez,Chihuahua,Mexico,70\r\n";
+    sample += "40.4168,-3.7038,Madrid,Madrid,Comunidad de Madrid,Espana,45\r\n";
+    sample += "41.3874,2.1686,Barcelona,Barcelona,Catalunya,Espana,35\r\n";
+    writeTextFile(GPS_PLACE_DB_PATH, sample);
+}
+
+bool gpsScanSdPlaceDb(float lat, float lng, GpsResolvedPlace& best) {
+    if (!beginSdCard()) return false;
+    gpsWriteSamplePlaceDb();
+
+    File f = SD.open(GPS_PLACE_DB_PATH, FILE_READ);
+    if (!f) return false;
+
+    uint32_t rows = 0;
+    bool found = false;
+    while (f.available() && rows < GPS_PLACE_MAX_ROWS) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        float pLat = 0.0f;
+        float pLng = 0.0f;
+        float radiusKm = 25.0f;
+        String city;
+        String municipality;
+        String state;
+        String country;
+        if (!gpsParsePlaceCsvLine(line, pLat, pLng, city, municipality, state, country, radiusKm)) continue;
+        rows++;
+        const float km = gpsDistanceKm(lat, lng, pLat, pLng);
+        if (!best.valid || km < best.km) {
+            char cityBuf[34];
+            char municipalityBuf[34];
+            char stateBuf[34];
+            char countryBuf[18];
+            gpsCopyField(cityBuf, sizeof(cityBuf), city);
+            gpsCopyField(municipalityBuf, sizeof(municipalityBuf), municipality);
+            gpsCopyField(stateBuf, sizeof(stateBuf), state);
+            gpsCopyField(countryBuf, sizeof(countryBuf), country);
+            gpsSetResolvedPlace(best, cityBuf, municipalityBuf, stateBuf, countryBuf, km, radiusKm, true, rows);
+            found = true;
+        }
+    }
+    f.close();
+    if (found) best.rowsScanned = rows;
+    return found;
+}
+
 GpsPlaceMatch resolveGpsPlace() {
     GpsPlaceMatch best = {nullptr, 99999.0f, false};
     if (!gps.location.isValid()) return best;
@@ -756,6 +909,41 @@ GpsPlaceMatch resolveGpsPlace() {
     }
     best.close = best.place != nullptr && best.km <= best.place->closeKm;
     return best;
+}
+
+void updateGpsResolvedPlace(bool force = false) {
+    if (!gps.location.isValid()) {
+        gpsResolvedPlace = {};
+        return;
+    }
+
+    const float lat = gps.location.lat();
+    const float lng = gps.location.lng();
+    const uint32_t now = millis();
+    const bool hasLast = gpsPlaceLastScanLat < 900.0 && gpsPlaceLastScanLng < 900.0;
+    const float movedKm = hasLast ? gpsDistanceKm(lat, lng, gpsPlaceLastScanLat, gpsPlaceLastScanLng) : 99999.0f;
+    if (!force && gpsResolvedPlace.valid && (now - gpsPlaceLastScanMs) < GPS_PLACE_RESCAN_MS && movedKm < GPS_PLACE_RESCAN_KM) {
+        return;
+    }
+
+    GpsResolvedPlace best = {};
+    const GpsPlaceMatch builtIn = resolveGpsPlace();
+    if (builtIn.place) {
+        gpsSetResolvedPlace(best, builtIn.place->city, builtIn.place->municipality,
+                            builtIn.place->state, "MX", builtIn.km, builtIn.place->closeKm,
+                            false, 0);
+    }
+    gpsScanSdPlaceDb(lat, lng, best);
+
+    gpsResolvedPlace = best;
+    gpsPlaceLastScanMs = now;
+    gpsPlaceLastScanLat = lat;
+    gpsPlaceLastScanLng = lng;
+}
+
+String gpsPlaceSourceText() {
+    if (!gpsResolvedPlace.valid) return "SIN BASE";
+    return gpsResolvedPlace.fromSd ? "SD DB" : "BASE INT";
 }
 
 void drawGpsPanel(int x, int y, int w, int h, const char* title) {
@@ -776,10 +964,13 @@ void drawGpsLine(int x, int y, const char* label, const String& value, uint16_t 
 }
 
 void saveGpsSnapshot() {
-    if (beginSdCard()) SD.mkdir("/APPS");
+    if (beginSdCard()) {
+        SD.mkdir("/APPS");
+        SD.mkdir("/APPS/GPS");
+    }
 
     String out;
-    const GpsPlaceMatch place = resolveGpsPlace();
+    updateGpsResolvedPlace(true);
     out += "CYBERDECK S3 APPS GPS SNAPSHOT\r\n";
     out += "Fix: " + String(gps.location.isValid() ? "YES" : "NO") + "\r\n";
     out += "Satellites: " + String(gps.satellites.value()) + "\r\n";
@@ -787,21 +978,27 @@ void saveGpsSnapshot() {
     if (gps.location.isValid()) {
         out += "Lat: " + String(gps.location.lat(), 6) + "\r\n";
         out += "Lng: " + String(gps.location.lng(), 6) + "\r\n";
+        out += "Lat DMS: " + gpsDmsText(gps.location.lat(), "N", "S") + "\r\n";
+        out += "Lng DMS: " + gpsDmsText(gps.location.lng(), "E", "W") + "\r\n";
         out += "Altitude: " + gpsAltText() + "\r\n";
         out += "Speed: " + gpsSpeedText() + "\r\n";
         out += "Course: " + gpsCourseText() + "\r\n";
         out += "UTC: " + gpsTimeText() + "\r\n";
+        out += "Maps: https://maps.google.com/?q=" + String(gps.location.lat(), 6) + "," + String(gps.location.lng(), 6) + "\r\n";
     }
-    if (place.place) {
-        out += "Nearest city: " + String(place.place->city) + "\r\n";
-        out += "Municipality: " + String(place.place->municipality) + "\r\n";
-        out += "State: " + String(place.place->state) + "\r\n";
-        out += "Distance: " + gpsKmText(place.km) + "\r\n";
-        out += "Close match: " + String(place.close ? "YES" : "NO") + "\r\n";
+    if (gpsResolvedPlace.valid) {
+        out += "Nearest city: " + String(gpsResolvedPlace.city) + "\r\n";
+        out += "Municipality: " + String(gpsResolvedPlace.municipality) + "\r\n";
+        out += "State: " + String(gpsResolvedPlace.state) + "\r\n";
+        out += "Country: " + String(gpsResolvedPlace.country) + "\r\n";
+        out += "Distance: " + gpsKmText(gpsResolvedPlace.km) + "\r\n";
+        out += "Close match: " + String(gpsResolvedPlace.close ? "YES" : "NO") + "\r\n";
+        out += "Place source: " + gpsPlaceSourceText() + "\r\n";
+        out += "Rows scanned: " + String(gpsResolvedPlace.rowsScanned) + "\r\n";
     }
     out += "Battery: " + String(batteryVolts, 2) + "V\r\n";
 
-    if (writeTextFile("/APPS/GPS_SNAPSHOT.txt", out)) {
+    if (writeTextFile("/APPS/GPS_SNAPSHOT.txt", out) && writeTextFile("/APPS/GPS/GPS_SNAPSHOT.txt", out)) {
         setStatus("GPS snapshot saved");
     } else {
         setStatus("GPS save failed");
@@ -813,40 +1010,40 @@ void drawGpsRadar() {
     drawGrid();
     const bool nmeaLive = gps.charsProcessed() > 0 && (millis() - gpsLastCharMs) < 2500;
     const bool hasFix = gps.location.isValid();
-    const GpsPlaceMatch place = resolveGpsPlace();
-    drawHeader("GPS RADAR", hasFix ? "ubicacion real" : (nmeaLive ? "nmea activo" : "sin rx"));
+    updateGpsResolvedPlace(false);
+    drawHeader("GPS RESCUE", hasFix ? "coord real" : (nmeaLive ? "nmea activo" : "sin rx"));
 
-    drawGpsPanel(8, 36, 104, 124, "SENAL");
-    drawCompass(60, 92, 34, gps.course.deg(), gps.course.isValid());
-    drawText(18, 132, String("SAT ") + gps.satellites.value(), hasFix ? COL_GREEN : COL_AMBER);
-    drawText(18, 148, String("HDOP ") + gpsHdopText(), gps.hdop.isValid() ? COL_CYAN : COL_MUTED);
+    drawGpsPanel(8, 36, 84, 124, "SENAL");
+    drawCompass(50, 88, 28, gps.course.deg(), gps.course.isValid());
+    drawText(18, 122, String("SAT ") + gps.satellites.value(), hasFix ? COL_GREEN : COL_AMBER);
+    drawText(18, 138, String("HDOP ") + gpsHdopText(), gps.hdop.isValid() ? COL_CYAN : COL_MUTED);
 
-    drawGpsPanel(120, 36, 192, 124, "UBICACION REAL");
+    drawGpsPanel(100, 36, 212, 124, "COORDENADAS EMERGENCIA");
 
     if (hasFix) {
-        drawGpsLine(130, 54, "LAT", gpsCoordText(gps.location.lat(), "N", "S"), COL_GREEN, 18);
-        drawGpsLine(130, 74, "LON", gpsCoordText(gps.location.lng(), "E", "W"), COL_GREEN, 18);
-        drawGpsLine(130, 94, "ALT", gpsAltText(), gps.altitude.isValid() ? COL_CYAN : COL_MUTED, 18);
-        drawGpsLine(130, 114, "VEL", gpsSpeedText(), gps.speed.isValid() ? COL_AMBER : COL_MUTED, 18);
-        drawGpsLine(130, 134, "UTC", gpsTimeText(), gps.time.isValid() ? COL_TEXT : COL_MUTED, 18);
+        drawGpsLine(110, 54, "LAT", gpsSignedCoordText(gps.location.lat()), COL_GREEN, 20);
+        drawGpsLine(110, 74, "LON", gpsSignedCoordText(gps.location.lng()), COL_GREEN, 20);
+        drawGpsLine(110, 94, "ALT", gpsAltText(), gps.altitude.isValid() ? COL_CYAN : COL_MUTED, 20);
+        drawGpsLine(110, 114, "DMS", gpsDmsText(gps.location.lat(), "N", "S"), COL_AMBER, 20);
+        drawGpsLine(110, 134, "UTC", gpsTimeText(), gps.time.isValid() ? COL_TEXT : COL_MUTED, 20);
     } else if (!nmeaLive) {
-        drawGpsLine(130, 58, "GPS", "NO NMEA on RX18", COL_RED, 18);
-        drawGpsLine(130, 82, "PIN", "TX GPS -> GPIO18", COL_AMBER, 18);
-        drawGpsLine(130, 106, "UART", "RX18 TX17 9600", COL_CYAN, 18);
-        drawGpsLine(130, 130, "RX", String(gpsCharsPerSec) + "/s", COL_MUTED, 18);
+        drawGpsLine(110, 58, "GPS", "NO NMEA on RX18", COL_RED, 20);
+        drawGpsLine(110, 82, "PIN", "TX GPS -> GPIO18", COL_AMBER, 20);
+        drawGpsLine(110, 106, "UART", "RX18 TX17 9600", COL_CYAN, 20);
+        drawGpsLine(110, 130, "RX", String(gpsCharsPerSec) + "/s", COL_MUTED, 20);
     } else {
-        drawGpsLine(130, 58, "GPS", "NMEA OK", COL_GREEN, 18);
-        drawGpsLine(130, 82, "FIX", "Buscando satelites", COL_AMBER, 18);
-        drawGpsLine(130, 106, "RX", String(gpsCharsPerSec) + "/s", COL_CYAN, 18);
-        drawGpsLine(130, 130, "CHK", String(gps.passedChecksum()) + "/" + gps.failedChecksum(), COL_MUTED, 18);
+        drawGpsLine(110, 58, "GPS", "NMEA OK", COL_GREEN, 20);
+        drawGpsLine(110, 82, "FIX", "Busca cielo abierto", COL_AMBER, 20);
+        drawGpsLine(110, 106, "RX", String(gpsCharsPerSec) + "/s", COL_CYAN, 20);
+        drawGpsLine(110, 130, "CHK", String(gps.passedChecksum()) + "/" + gps.failedChecksum(), COL_MUTED, 20);
     }
 
     drawGpsPanel(8, 166, 304, 46, "LUGAR ESTIMADO");
-    if (hasFix && place.place) {
-        const String cityLine = String("Ciudad: ") + place.place->city + "  Mun: " + place.place->municipality;
-        const String stateLine = String(place.close ? "Zona: " : "Cerca: ") + place.place->state + "  " + gpsKmText(place.km);
-        drawText(18, 182, fitGpsText(cityLine, 38), place.close ? COL_GREEN : COL_AMBER);
-        drawText(18, 198, fitGpsText(stateLine, 38), COL_CYAN);
+    if (hasFix && gpsResolvedPlace.valid) {
+        const String cityLine = String("Ciudad: ") + gpsResolvedPlace.city + "  Mun: " + gpsResolvedPlace.municipality;
+        const String stateLine = String(gpsResolvedPlace.close ? "Zona: " : "Cerca: ") + gpsResolvedPlace.state + " " + gpsResolvedPlace.country + " " + gpsKmText(gpsResolvedPlace.km);
+        drawText(18, 182, fitGpsText(cityLine, 38), gpsResolvedPlace.close ? COL_GREEN : COL_AMBER);
+        drawText(18, 198, fitGpsText(stateLine + " " + gpsPlaceSourceText(), 38), COL_CYAN);
     } else if (nmeaLive) {
         drawText(18, 184, "GPS conectado. Esperando fix real...", COL_AMBER);
         drawText(18, 200, String("RX ") + gpsCharsPerSec + "/s  OK/Bad " + gps.passedChecksum() + "/" + gps.failedChecksum(), COL_CYAN);
@@ -854,7 +1051,7 @@ void drawGpsRadar() {
         drawText(18, 184, "Sin datos NMEA. Revisa TX GPS -> RX18.", COL_RED);
         drawText(18, 200, String("Chars ") + gps.charsProcessed() + "  Age " + ((millis() - gpsLastCharMs) / 1000) + "s", COL_MUTED);
     }
-    drawFooter("OK GUARDAR SNAPSHOT  BACK SALIR");
+    drawFooter("OK SNAPSHOT  UP/DOWN ACTUALIZAR LUGAR  BACK SALIR");
 }
 
 void runGpsRadarApp() {
@@ -879,6 +1076,12 @@ void runGpsRadarApp() {
         if (action == AppAction::Select) {
             saveGpsSnapshot();
             toneClick(3000, 18);
+            drawGpsRadar();
+            pushFrame();
+        } else if (action == AppAction::Up || action == AppAction::Down) {
+            updateGpsResolvedPlace(true);
+            setStatus("GPS place refreshed");
+            toneClick(2200, 10);
             drawGpsRadar();
             pushFrame();
         }

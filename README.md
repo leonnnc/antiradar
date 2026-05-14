@@ -49,23 +49,53 @@ Dashboard de estado del dispositivo.
 - Muestra satelites detectados por el GPS.
 - Sirve como pantalla rapida para confirmar que el hardware esta vivo.
 
-### GPS RADAR
+### GPS RADAR / GPS RESCUE
 
-Vista GPS redisenada para mostrar ubicacion real cuando el NEO-6M consigue fix.
+Vista GPS redisenada para hiking, emergencia y ubicacion real cuando el NEO-6M consigue fix.
 
 - Usa UART1 en `RX18 / TX17` a `9600 baud`.
 - Pausa los radios nRF24 al entrar para reducir consumo y ruido.
-- Muestra estado `sin rx`, `nmea activo` o `ubicacion real`.
-- Muestra latitud, longitud, altitud, velocidad, hora UTC, satelites, HDOP y rumbo.
+- Muestra estado `sin rx`, `nmea activo` o `coord real`.
+- Muestra latitud, longitud, altitud, hora UTC, satelites, HDOP y rumbo.
+- Usa coordenadas firmadas en grados decimales para que sean faciles de dictar en una emergencia.
 - Incluye brujula visual para rumbo cuando el GPS reporta movimiento.
-- Calcula ciudad, municipio y estado aproximado usando una base local offline.
-- Guarda snapshot en microSD con `OK` en `/APPS/GPS_SNAPSHOT.txt`.
+- Calcula ciudad, municipio, estado y pais aproximado usando una base local offline.
+- Puede leer una base de lugares desde microSD en `/APPS/GPS/places.csv`.
+- Guarda snapshot en microSD con `OK` en `/APPS/GPS_SNAPSHOT.txt` y `/APPS/GPS/GPS_SNAPSHOT.txt`.
 
 Notas sobre GPS:
 
 - El GPS no entrega nombres de ciudad; solo coordenadas. Los nombres salen de una tabla local editable en el firmware.
 - En interior es normal ver `Sats: 0`. Para fix real se recomienda ventana o cielo abierto.
 - Si `Chars` no sube rapido, revisar TX del GPS a GPIO18, GND comun, alimentacion y baudrate.
+- Para emergencia real, la coordenada decimal `LAT` y `LON` es mas importante que el nombre de ciudad.
+
+#### Base offline de ciudades en microSD
+
+Para que el firmware funcione en America, Espana u otros lugares sin recompilar, crea este archivo en la microSD:
+
+```text
+/APPS/GPS/places.csv
+```
+
+Formato:
+
+```csv
+lat,lng,city,municipality,state,country,radius_km
+28.6353,-106.0889,Chihuahua,Chihuahua,Chihuahua,Mexico,65
+31.6904,-106.4245,Ciudad Juarez,Juarez,Chihuahua,Mexico,70
+40.4168,-3.7038,Madrid,Madrid,Comunidad de Madrid,Espana,45
+41.3874,2.1686,Barcelona,Barcelona,Catalunya,Espana,35
+```
+
+El firmware busca el punto mas cercano y muestra la ciudad/municipio estimado. `radius_km` define cuando se considera que estas dentro de la zona aproximada.
+
+Recomendacion para publicar el firmware:
+
+- Mantener una base compacta con ciudades principales.
+- Para hiking, agregar pueblos, parques, refugios o puntos de referencia cercanos a la ruta.
+- Para una base grande, usar datos tipo GeoNames y generar un CSV compacto solo con columnas necesarias.
+- Si no existe `places.csv`, el firmware crea una muestra pequena automaticamente.
 
 ### SD VAULT
 
