@@ -172,21 +172,21 @@ Para emergencia real, las coordenadas decimales `LAT` y `LON` son el dato princi
 Monitor visual de estadisticas publicas/permitidas de Instagram mediante un endpoint propio.
 
 - Incluye teclado virtual para escribir un usuario de Instagram.
-- Usa `UP/DOWN` para cambiar la tecla y `OK` para escribir.
-- La tecla `GO` consulta el endpoint configurado.
+- Teclado basado en matriz 4x10 con fila especial `DEL`, `CLEAR`, `OK`, `X` y `.`.
+- Usa `UP/DOWN` para navegar por las teclas y `OK` para seleccionar.
+- La tecla `OK` del teclado cambia a pantalla de resultados y consulta el endpoint si esta configurado.
 - `BACK` borra el ultimo caracter; si el usuario queda vacio, vuelve al menu.
-- Lee configuracion desde `/APPS/IG/CONFIG.TXT`.
-- Si no existe la configuracion, crea una plantilla segura en la microSD.
+- No requiere microSD para capturar el usuario ni mostrar la pantalla de resultados.
 - No guarda tokens ni credenciales de Meta dentro del firmware.
 - Espera un JSON simple con `username`, `followers` o `followers_count`, y `media` o `media_count`.
-- Guarda historial por usuario en `/APPS/IG/<usuario>.csv` con fecha, followers, media y delta.
+- Si no hay endpoint configurado, muestra `API no configurada` en la pantalla de resultados.
 
-Ejemplo de `/APPS/IG/CONFIG.TXT`:
+Config opcional por build flags privados:
 
 ```txt
-WIFI_SSID=TuWiFi
-WIFI_PASS=TuPassword
-API_URL=https://tu-api.com/ig?user={user}
+-D IG_WIFI_SSID=\"TuWiFi\"
+-D IG_WIFI_PASS=\"TuPassword\"
+-D IG_API_URL=\"https://tu-api.com/ig?user={user}\"
 ```
 
 Ejemplo de respuesta JSON esperada:

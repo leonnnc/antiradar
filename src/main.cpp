@@ -96,6 +96,16 @@ constexpr uint8_t WIFI_HISTORY_LEN = 44;
 constexpr uint8_t BLE_MAX_DEVICES = 24;
 constexpr uint8_t BLE_HISTORY_LEN = 36;
 
+#ifndef IG_WIFI_SSID
+#define IG_WIFI_SSID ""
+#endif
+#ifndef IG_WIFI_PASS
+#define IG_WIFI_PASS ""
+#endif
+#ifndef IG_API_URL
+#define IG_API_URL ""
+#endif
+
 enum class Screen : uint8_t {
     Home,
     SystemPulse,
@@ -282,8 +292,9 @@ uint32_t bleScanPass = 0;
 IgMonitorConfig igConfig = {};
 IgMonitorResult igResult = {};
 char igUsername[32] = "pepeangelll";
-uint8_t igKeyboardIndex = 15;
 bool igHasResult = false;
+uint8_t igKbRow = 1;
+uint8_t igKbCol = 0;
 
 class BleRemoteServerCallbacks : public BLEServerCallbacks {
 public:
@@ -2057,7 +2068,37 @@ void runWifiChannelAnalyzerApp() {
     }
 }
 
-const char IG_KEYS[] = "abcdefghijklmnopqrstuvwxyz0123456789._<>";
+const char* IG_KB_ROWS[] = {
+    "1234567890",
+    "qwertyuiop",
+    "asdfghjkl_",
+    "zxcvbnm..."
+};
+
+enum IgSpecialKey : uint8_t {
+    IG_KEY_DEL = 0,
+    IG_KEY_CLEAR = 1,
+    IG_KEY_GO = 2,
+    IG_KEY_CANCEL = 3,
+    IG_KEY_DOT = 4
+};
+
+const char* IG_SPECIAL_LABELS[] = {"DEL", "CLEAR", "OK", "X", "."};
+
+uint8_t igAlphaColToSpecial(uint8_t col) {
+    return col / 2;
+}
+
+uint8_t igSpecialToAlphaCol(uint8_t special) {
+    return special * 2;
+}
+
+char igKeyCharAt(uint8_t row, uint8_t col) {
+    if (row > 3 || col > 9) return 0;
+    const char* rowText = IG_KB_ROWS[row];
+    if (col >= strlen(rowText)) return 0;
+    return rowText[col];
+}
 
 String igConfigTemplate() {
     String out;
@@ -2079,37 +2120,9 @@ String igTrimValue(String value) {
 
 bool igLoadConfig() {
     memset(&igConfig, 0, sizeof(igConfig));
-    if (beginSdCard()) {
-        SD.mkdir("/APPS");
-        SD.mkdir("/APPS/IG");
-    }
-
-    String config = readTextFile("/APPS/IG/CONFIG.TXT", 1024);
-    if (config.length() == 0) {
-        writeTextFile("/APPS/IG/CONFIG.TXT", igConfigTemplate());
-        setStatus("IG config sample created");
-        return false;
-    }
-
-    int start = 0;
-    while (start < (int)config.length()) {
-        int end = config.indexOf('\n', start);
-        if (end < 0) end = config.length();
-        String line = config.substring(start, end);
-        line.trim();
-        start = end + 1;
-        if (line.length() == 0 || line.startsWith("#")) continue;
-        const int eq = line.indexOf('=');
-        if (eq < 0) continue;
-        String key = line.substring(0, eq);
-        String value = igTrimValue(line.substring(eq + 1));
-        key.trim();
-        key.toUpperCase();
-        if (key == "WIFI_SSID") value.toCharArray(igConfig.wifiSsid, sizeof(igConfig.wifiSsid));
-        else if (key == "WIFI_PASS") value.toCharArray(igConfig.wifiPass, sizeof(igConfig.wifiPass));
-        else if (key == "API_URL") value.toCharArray(igConfig.apiUrl, sizeof(igConfig.apiUrl));
-    }
-
+    strlcpy(igConfig.wifiSsid, IG_WIFI_SSID, sizeof(igConfig.wifiSsid));
+    strlcpy(igConfig.wifiPass, IG_WIFI_PASS, sizeof(igConfig.wifiPass));
+    strlcpy(igConfig.apiUrl, IG_API_URL, sizeof(igConfig.apiUrl));
     igConfig.loaded = igConfig.wifiSsid[0] != '\0' && igConfig.apiUrl[0] != '\0';
     return igConfig.loaded;
 }
@@ -2142,40 +2155,13 @@ String igTimestampText() {
 }
 
 uint32_t igReadLastFollowers(const char* username, bool& hasValue) {
+    (void)username;
     hasValue = false;
-    String data = readTextFile(igHistoryPath(username).c_str(), 4096);
-    data.trim();
-    if (data.length() == 0) return 0;
-
-    int lineStart = data.lastIndexOf('\n');
-    if (lineStart >= 0) lineStart++;
-    else lineStart = 0;
-    String line = data.substring(lineStart);
-    line.trim();
-    if (line.startsWith("timestamp")) return 0;
-
-    const int p1 = line.indexOf(',');
-    const int p2 = p1 < 0 ? -1 : line.indexOf(',', p1 + 1);
-    if (p1 < 0 || p2 < 0) return 0;
-    hasValue = true;
-    return (uint32_t)line.substring(p1 + 1, p2).toInt();
+    return 0;
 }
 
 void igAppendHistory(const IgMonitorResult& result) {
-    if (beginSdCard()) {
-        SD.mkdir("/APPS");
-        SD.mkdir("/APPS/IG");
-    }
-    const String path = igHistoryPath(result.username);
-    if (readTextFile(path.c_str(), 32).length() == 0) {
-        appendTextFile(path.c_str(), "timestamp,followers,media,delta\r\n");
-    }
-    String line;
-    line += igTimestampText() + ",";
-    line += String(result.followers) + ",";
-    line += String(result.media) + ",";
-    line += String(result.delta) + "\r\n";
-    appendTextFile(path.c_str(), line);
+    (void)result;
 }
 
 String igBuildUrl(const char* username) {
@@ -2230,8 +2216,8 @@ bool igFetchStats() {
     igHasResult = false;
 
     if (!igLoadConfig()) {
-        strlcpy(igResult.status, "Config SD creada", sizeof(igResult.status));
-        setStatus("IG config needed");
+        strlcpy(igResult.status, "API no configurada", sizeof(igResult.status));
+        setStatus("IG API not configured");
         return false;
     }
 
@@ -2302,52 +2288,172 @@ bool igFetchStats() {
     return igResult.ok;
 }
 
-String igCurrentKeyText() {
-    const char key = IG_KEYS[igKeyboardIndex];
-    if (key == '>') return "GO";
-    if (key == '<') return "DEL";
-    return String(key);
+void igCursorDown() {
+    if (igKbRow < 4) {
+        igKbRow++;
+    } else {
+        igKbCol = (igKbCol + 1) % 10;
+        igKbRow = 0;
+    }
 }
 
-void drawInstaMonitor() {
+void igCursorUp() {
+    if (igKbRow > 0) {
+        igKbRow--;
+    } else {
+        igKbCol = (igKbCol + 9) % 10;
+        igKbRow = 4;
+    }
+}
+
+void drawIgKey(uint8_t row, uint8_t col, bool selected) {
+    const int keyW = 28;
+    const int keyH = 22;
+    const int gap = 2;
+    const int x = 10 + col * (keyW + gap);
+    const int y = 96 + row * (keyH + gap);
+    const uint16_t bg = selected ? COL_AMBER : COL_BG;
+    const uint16_t fg = selected ? COL_BG : COL_CYAN;
+    const uint16_t border = selected ? COL_AMBER : COL_GRID;
+    frame.fillRect(x, y, keyW, keyH, bg);
+    frame.drawRect(x, y, keyW, keyH, border);
+    const char c = igKeyCharAt(row, col);
+    if (!c) return;
+    frame.setTextDatum(MC_DATUM);
+    frame.setTextColor(fg, bg);
+    frame.setTextSize(1);
+    frame.drawString(String(c), x + keyW / 2, y + keyH / 2 - 1, 2);
+    frame.setTextDatum(TL_DATUM);
+}
+
+void drawIgSpecialKey(uint8_t special, bool selected) {
+    const int keyW = 28;
+    const int keyH = 22;
+    const int gap = 2;
+    const int startCol = igSpecialToAlphaCol(special);
+    const int x = 10 + startCol * (keyW + gap);
+    const int y = 96 + 4 * (keyH + gap);
+    const int w = keyW * 2 + gap;
+    const uint16_t accent = special == IG_KEY_GO ? COL_GREEN : (special == IG_KEY_CANCEL ? COL_RED : COL_CYAN);
+    const uint16_t bg = selected ? accent : COL_BG;
+    const uint16_t fg = selected ? COL_BG : accent;
+    frame.fillRect(x, y, w, keyH + 2, bg);
+    frame.drawRect(x, y, w, keyH + 2, accent);
+    frame.setTextDatum(MC_DATUM);
+    frame.setTextColor(fg, bg);
+    frame.setTextSize(1);
+    frame.drawString(IG_SPECIAL_LABELS[special], x + w / 2, y + (keyH + 2) / 2, 1);
+    frame.setTextDatum(TL_DATUM);
+}
+
+void drawIgKeyboardKeys() {
+    const bool specialRow = igKbRow == 4;
+    for (uint8_t row = 0; row < 4; row++) {
+        for (uint8_t col = 0; col < 10; col++) {
+            drawIgKey(row, col, !specialRow && row == igKbRow && col == igKbCol);
+        }
+    }
+    const uint8_t selectedSpecial = specialRow ? igAlphaColToSpecial(igKbCol) : 255;
+    for (uint8_t special = 0; special < 5; special++) {
+        drawIgSpecialKey(special, special == selectedSpecial);
+    }
+}
+
+void drawIgTextBox() {
+    frame.fillRect(10, 54, 300, 34, COL_BG);
+    frame.drawRect(10, 54, 300, 34, COL_AMBER);
+    String text = String("@") + igUsername;
+    if ((millis() / 500) % 2 == 0) text += "_";
+    if (text.length() > 28) text = text.substring(text.length() - 28);
+    drawTextOn(16, 63, text, COL_TEXT, COL_BG, 1);
+    frame.setTextDatum(TR_DATUM);
+    frame.setTextColor(COL_MUTED, COL_BG);
+    frame.setTextSize(1);
+    frame.drawString(String(strlen(igUsername)) + "/30", 304, 76, 1);
+    frame.setTextDatum(TL_DATUM);
+}
+
+void drawInstaKeyboard() {
     frame.fillSprite(COL_BG);
     drawGrid();
-    drawHeader("INSTA MONITOR", igHasResult ? "stats" : "teclado");
+    drawHeader("INSTA MONITOR", "teclado");
+    drawText(10, 34, "Escribe usuario y selecciona OK", COL_CYAN);
+    drawIgTextBox();
+    drawIgKeyboardKeys();
+    drawFooter("UP/DOWN NAVEGA  OK SELECT  BACK DEL");
+    pushFrame();
+}
 
-    frame.drawRoundRect(10, 36, 300, 52, 5, COL_AMBER);
-    frame.fillRect(16, 42, 288, 40, 0x0004);
-    drawTextOn(24, 46, "Usuario Instagram", COL_MUTED, 0x0004);
-    drawTextOn(24, 64, String("@") + fitText(igUsername, 28), COL_TEXT, 0x0004);
+void drawInstaResults() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("INSTA RESULT", igResult.ok ? "api ok" : "pendiente");
 
-    frame.drawRoundRect(10, 96, 96, 78, 5, COL_CYAN);
-    frame.setTextDatum(MC_DATUM);
-    frame.setTextColor(COL_CYAN, COL_BG);
-    frame.setTextSize(3);
-    frame.drawString(igCurrentKeyText(), 58, 133, 2);
-    frame.setTextSize(1);
-    frame.setTextColor(COL_MUTED, COL_BG);
-    frame.drawString("UP/DOWN tecla", 58, 164, 1);
-    frame.setTextDatum(TL_DATUM);
+    frame.drawRoundRect(10, 38, 300, 54, 5, igResult.ok ? COL_GREEN : COL_AMBER);
+    frame.fillRect(16, 44, 288, 42, 0x0004);
+    drawTextOn(24, 48, "Busqueda", COL_MUTED, 0x0004);
+    drawTextOn(24, 66, String("@") + fitText(igUsername, 28), COL_TEXT, 0x0004);
 
-    frame.drawRoundRect(116, 96, 194, 78, 5, igHasResult ? COL_GREEN : COL_GRID);
+    frame.drawRoundRect(10, 102, 300, 90, 5, igResult.ok ? COL_GREEN : COL_GRID);
     if (igHasResult) {
-        drawText(126, 106, String("@") + fitText(igResult.username, 20), COL_GREEN);
-        drawText(126, 126, String("Followers ") + igResult.followers, COL_TEXT);
-        drawText(126, 144, String("Media ") + igResult.media + "  Delta " + (igResult.delta >= 0 ? "+" : "") + igResult.delta,
+        drawText(24, 116, String("Followers: ") + igResult.followers, COL_GREEN);
+        drawText(24, 138, String("Media: ") + igResult.media, COL_CYAN);
+        drawText(24, 160, String("Delta: ") + (igResult.delta >= 0 ? "+" : "") + igResult.delta,
                  igResult.delta >= 0 ? COL_GREEN : COL_RED);
-        drawText(126, 160, "Guardado en /APPS/IG", COL_MUTED);
+        drawText(24, 178, "Fuente: endpoint configurado", COL_MUTED);
     } else {
-        drawText(126, 108, "OK agrega tecla", COL_CYAN);
-        drawText(126, 126, "Selecciona GO para consultar", COL_GREEN);
-        drawText(126, 144, "BACK borra / vacio sale", COL_AMBER);
-        drawText(126, 162, "Config: /APPS/IG/CONFIG.TXT", igConfig.loaded ? COL_GREEN : COL_MUTED);
+        drawText(24, 116, "Resultados no disponibles aun.", COL_AMBER);
+        drawText(24, 138, "Configura backend con build flags:", COL_CYAN);
+        drawText(24, 156, "IG_WIFI_SSID / IG_API_URL", COL_TEXT);
+        drawText(24, 176, fitText(igResult.status[0] ? igResult.status : "API pendiente", 34), COL_MUTED);
     }
 
-    frame.drawRoundRect(10, 182, 300, 30, 5, COL_GRID);
-    drawText(20, 192, fitText(String("Estado: ") + (igResult.status[0] ? igResult.status : statusLine), 36),
-             igResult.ok ? COL_GREEN : COL_CYAN);
-    drawFooter("UP/DOWN TECLA  OK ADD/GO  BACK BORRA");
+    drawFooter("OK REINTENTAR  BACK TECLADO  HOLD HOME");
     pushFrame();
+}
+
+int igExecuteCurrentKey() {
+    if (igKbRow < 4) {
+        const char key = igKeyCharAt(igKbRow, igKbCol);
+        if (key && strlen(igUsername) < sizeof(igUsername) - 1) {
+            const size_t len = strlen(igUsername);
+            igUsername[len] = key;
+            igUsername[len + 1] = '\0';
+            igHasResult = false;
+            toneClick(2500, 10);
+        }
+        return 0;
+    }
+
+    switch (igAlphaColToSpecial(igKbCol)) {
+        case IG_KEY_DEL: {
+            const size_t len = strlen(igUsername);
+            if (len > 0) igUsername[len - 1] = '\0';
+            igHasResult = false;
+            toneClick(1200, 10);
+            return 0;
+        }
+        case IG_KEY_CLEAR:
+            igUsername[0] = '\0';
+            igHasResult = false;
+            toneClick(1000, 20);
+            return 0;
+        case IG_KEY_GO:
+            toneClick(3200, 18);
+            return 1;
+        case IG_KEY_CANCEL:
+            toneClick(1200, 40);
+            return 2;
+        case IG_KEY_DOT:
+            if (strlen(igUsername) < sizeof(igUsername) - 1) {
+                const size_t len = strlen(igUsername);
+                igUsername[len] = '.';
+                igUsername[len + 1] = '\0';
+            }
+            toneClick(2400, 10);
+            return 0;
+    }
+    return 0;
 }
 
 void runInstaMonitorApp() {
@@ -2355,7 +2461,8 @@ void runInstaMonitorApp() {
     igLoadConfig();
     igResult = {};
     igHasResult = false;
-    drawInstaMonitor();
+    bool resultsView = false;
+    drawInstaKeyboard();
 
     while (true) {
         serviceGps(3);
@@ -2367,47 +2474,59 @@ void runInstaMonitorApp() {
             pushFrame();
             return;
         }
+
+        if (resultsView) {
+            if (action == AppAction::Back) {
+                resultsView = false;
+                drawInstaKeyboard();
+            } else if (action == AppAction::Select) {
+                igFetchStats();
+                drawInstaResults();
+            } else {
+                delay(4);
+            }
+            continue;
+        }
+
         if (action == AppAction::Up) {
-            const uint8_t len = strlen(IG_KEYS);
-            igKeyboardIndex = (igKeyboardIndex == 0) ? len - 1 : igKeyboardIndex - 1;
+            igCursorUp();
             toneClick();
         } else if (action == AppAction::Down) {
-            igKeyboardIndex = (igKeyboardIndex + 1) % strlen(IG_KEYS);
+            igCursorDown();
             toneClick();
         } else if (action == AppAction::Back) {
             const size_t len = strlen(igUsername);
-            if (len == 0) {
+            if (len > 0) igUsername[len - 1] = '\0';
+            else {
                 currentScreen = Screen::Home;
                 setStatus("Ready");
                 drawHome();
                 pushFrame();
                 return;
             }
-            igUsername[len - 1] = '\0';
             igHasResult = false;
             toneClick(1200, 10);
         } else if (action == AppAction::Select) {
-            const char key = IG_KEYS[igKeyboardIndex];
-            if (key == '>') {
-                toneClick(3200, 18);
+            const int result = igExecuteCurrentKey();
+            if (result == 1 && strlen(igUsername) > 0) {
                 igFetchStats();
-            } else if (key == '<') {
-                const size_t len = strlen(igUsername);
-                if (len > 0) igUsername[len - 1] = '\0';
-                igHasResult = false;
-                toneClick(1200, 10);
-            } else if (strlen(igUsername) < sizeof(igUsername) - 1) {
-                const size_t len = strlen(igUsername);
-                igUsername[len] = key;
-                igUsername[len + 1] = '\0';
-                igHasResult = false;
-                toneClick(2600, 10);
+                resultsView = true;
+                drawInstaResults();
+                delay(4);
+                continue;
+            }
+            if (result == 2) {
+                currentScreen = Screen::Home;
+                setStatus("Ready");
+                drawHome();
+                pushFrame();
+                return;
             }
         } else {
             delay(4);
             continue;
         }
-        drawInstaMonitor();
+        drawInstaKeyboard();
         delay(4);
     }
 }
