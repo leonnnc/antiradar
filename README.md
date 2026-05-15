@@ -126,7 +126,8 @@ El ESP32-S3 tiene una sola antena WiFi, asi que no puede saber la direccion real
 Radar pasivo de anuncios Bluetooth Low Energy cercanos.
 
 - Escanea dispositivos BLE cercanos.
-- Muestra nombre, direccion MAC BLE, RSSI, servicios anunciados y potencia TX cuando esta disponible.
+- Muestra nombre cuando el dispositivo lo anuncia; si viene oculto, crea una etiqueta por fabricante, servicio BLE, apariencia o final de MAC.
+- Muestra direccion MAC BLE, RSSI, servicios anunciados y potencia TX cuando esta disponible.
 - Permite seleccionar un dispositivo por direccion.
 - Abre un radar visual con sweep, punto de intensidad, historial RSSI y distancia aproximada.
 - Muestra tendencia `ACERCANDOTE`, `ALEJANDOTE`, `ESTABLE` o `BUSCANDO`.
@@ -137,7 +138,7 @@ Radar pasivo de anuncios Bluetooth Low Energy cercanos.
 
 Limitacion importante:
 
-BLE DEVICE RADAR mide anuncios BLE visibles. Algunos telefonos y accesorios cambian de MAC por privacidad, asi que un dispositivo puede aparecer con direccion distinta despues de cierto tiempo.
+BLE DEVICE RADAR mide anuncios BLE visibles. Algunos telefonos y accesorios ocultan su nombre o cambian de MAC por privacidad, asi que el firmware usa etiquetas como `Apple BLE`, `HID Device`, `Beacon BLE` o `BLE AA:BB:CC` cuando no hay nombre publico.
 
 ### GPS SOS MODE
 

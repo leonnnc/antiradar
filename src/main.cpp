@@ -169,13 +169,19 @@ struct WifiApInfo {
 
 struct BleDeviceInfo {
     char name[28];
+    char label[28];
+    char kind[18];
     char address[18];
     int32_t rssi;
     int32_t bestRssi;
     int8_t txPower;
     uint8_t serviceCount;
+    uint16_t companyId;
+    uint16_t appearance;
     bool hasName;
     bool hasTxPower;
+    bool hasManufacturer;
+    bool hasAppearance;
 };
 
 const GpsPlace GPS_PLACES[] = {
@@ -2096,9 +2102,101 @@ uint16_t bleTrendColor() {
     return COL_CYAN;
 }
 
-String bleNameText(const char* name) {
-    if (name[0] == '\0') return "<sin nombre>";
-    return String(name);
+String bleAddressShort(const String& address) {
+    if (address.length() <= 8) return address;
+    return address.substring(address.length() - 8);
+}
+
+uint16_t bleManufacturerId(BLEAdvertisedDevice& device) {
+    if (!device.haveManufacturerData()) return 0xFFFF;
+    const std::string data = device.getManufacturerData();
+    if (data.length() < 2) return 0xFFFF;
+    return (uint8_t)data[0] | ((uint16_t)(uint8_t)data[1] << 8);
+}
+
+String bleCompanyLabel(uint16_t companyId) {
+    switch (companyId) {
+        case 0x004C: return "Apple BLE";
+        case 0x0006: return "Microsoft BLE";
+        case 0x0075: return "Samsung BLE";
+        case 0x00E0: return "Google BLE";
+        case 0x0059: return "Nordic BLE";
+        case 0x000F: return "Broadcom BLE";
+        case 0x00D2: return "Sony BLE";
+        case 0x0131: return "Xiaomi BLE";
+        case 0x038F: return "Meta BLE";
+        case 0x0499: return "Espressif BLE";
+        default: break;
+    }
+    char label[12];
+    snprintf(label, sizeof(label), "MFG %04X", companyId);
+    return String(label);
+}
+
+String bleServiceLabel(BLEAdvertisedDevice& device) {
+    for (int i = 0; i < device.getServiceUUIDCount(); i++) {
+        String uuid = String(device.getServiceUUID(i).toString().c_str());
+        uuid.toLowerCase();
+        if (uuid.indexOf("1812") >= 0) return "HID Device";
+        if (uuid.indexOf("180f") >= 0) return "Battery BLE";
+        if (uuid.indexOf("180d") >= 0) return "Heart Rate";
+        if (uuid.indexOf("180a") >= 0) return "Device Info";
+        if (uuid.indexOf("1809") >= 0) return "Thermo BLE";
+        if (uuid.indexOf("181a") >= 0) return "Env Sensor";
+        if (uuid.indexOf("1816") >= 0) return "Cycling BLE";
+        if (uuid.indexOf("1814") >= 0) return "Phone Alert";
+        if (uuid.indexOf("feaa") >= 0) return "Beacon BLE";
+    }
+    return "";
+}
+
+String bleAppearanceLabel(uint16_t appearance) {
+    const uint16_t category = appearance >> 6;
+    switch (category) {
+        case 1: return "Phone BLE";
+        case 2: return "Computer BLE";
+        case 3: return "Watch BLE";
+        case 5: return "Display BLE";
+        case 10: return "Tag BLE";
+        case 15: return "HID BLE";
+        case 49: return "Sensor BLE";
+        default: break;
+    }
+    return "";
+}
+
+String bleBuildLabel(BLEAdvertisedDevice& device, const String& address) {
+    if (device.haveName()) {
+        String name = String(device.getName().c_str());
+        name.trim();
+        if (name.length()) return name;
+    }
+
+    const uint16_t companyId = bleManufacturerId(device);
+    if (companyId != 0xFFFF) return bleCompanyLabel(companyId);
+
+    const String service = bleServiceLabel(device);
+    if (service.length()) return service;
+
+    if (device.haveAppearance()) {
+        const String appearance = bleAppearanceLabel(device.getAppearance());
+        if (appearance.length()) return appearance;
+    }
+
+    return String("BLE ") + bleAddressShort(address);
+}
+
+String bleKindText(const BleDeviceInfo& device) {
+    if (device.hasName) return "nombre adv";
+    if (device.hasManufacturer) return device.kind;
+    if (device.serviceCount) return "servicio BLE";
+    if (device.hasAppearance) return "apariencia";
+    return "direccion";
+}
+
+String bleDisplayText(const char* label) {
+    if (label[0] == '\0') return "BLE desconocido";
+    return String(label);
 }
 
 void bleRememberSample(int32_t rssi) {
@@ -2164,14 +2262,19 @@ void bleScanDevices() {
     }
 
     drawBleScanning("Escaneando dispositivos BLE...");
-    BLEScanResults results = bleScan->start(3, false);
+    BLEScanResults results = bleScan->start(4, false);
     const int count = results.getCount();
-    bleDeviceCount = min<uint8_t>((uint8_t)count, BLE_MAX_DEVICES);
+    bleDeviceCount = (uint8_t)min(count, (int)BLE_MAX_DEVICES);
     for (uint8_t i = 0; i < bleDeviceCount; i++) {
         BLEAdvertisedDevice d = results.getDevice(i);
         String name = d.haveName() ? String(d.getName().c_str()) : "";
         String address = String(d.getAddress().toString().c_str());
+        const uint16_t companyId = bleManufacturerId(d);
+        const String label = bleBuildLabel(d, address);
+        const String kind = companyId != 0xFFFF ? bleCompanyLabel(companyId) : bleServiceLabel(d);
         name.toCharArray(bleDevices[i].name, sizeof(bleDevices[i].name));
+        label.toCharArray(bleDevices[i].label, sizeof(bleDevices[i].label));
+        kind.toCharArray(bleDevices[i].kind, sizeof(bleDevices[i].kind));
         address.toCharArray(bleDevices[i].address, sizeof(bleDevices[i].address));
         bleDevices[i].rssi = d.getRSSI();
         bleDevices[i].bestRssi = d.getRSSI();
@@ -2179,6 +2282,10 @@ void bleScanDevices() {
         bleDevices[i].hasTxPower = d.haveTXPower();
         bleDevices[i].txPower = d.haveTXPower() ? d.getTXPower() : 0;
         bleDevices[i].serviceCount = d.getServiceUUIDCount();
+        bleDevices[i].companyId = companyId;
+        bleDevices[i].appearance = d.haveAppearance() ? d.getAppearance() : 0;
+        bleDevices[i].hasManufacturer = companyId != 0xFFFF;
+        bleDevices[i].hasAppearance = d.haveAppearance();
     }
     bleScan->clearResults();
     bleSortDevices();
@@ -2205,7 +2312,7 @@ void drawBleList() {
         const uint16_t fg = selected ? COL_BG : COL_TEXT;
         frame.fillRoundRect(10, y, 300, 21, 4, bg);
         frame.drawRoundRect(10, y, 300, 21, 4, selected ? COL_TEXT : COL_GRID);
-        drawTextOn(16, y + 2, fitGpsText(bleNameText(bleDevices[idx].name), 18), fg, bg, 1);
+        drawTextOn(16, y + 2, fitGpsText(bleDisplayText(bleDevices[idx].label), 18), fg, bg, 1);
         frame.setTextDatum(TR_DATUM);
         frame.setTextColor(selected ? COL_BG : (bleDevices[idx].rssi > -65 ? COL_GREEN : COL_AMBER), bg);
         frame.drawString(String(bleDevices[idx].rssi) + "dBm SVC" + bleDevices[idx].serviceCount, 303, y + 2, 2);
@@ -2217,7 +2324,8 @@ void drawBleList() {
         drawText(28, 116, "OK vuelve a escanear.", COL_CYAN);
     } else {
         const BleDeviceInfo& device = bleDevices[bleListSelected];
-        drawText(14, 210, fitGpsText(String(device.address) + (device.hasTxPower ? String("  TX ") + device.txPower : ""), 38), COL_MUTED);
+        drawText(14, 198, fitGpsText(bleKindText(device), 24), COL_CYAN);
+        drawText(14, 214, fitGpsText(String(device.address) + (device.hasTxPower ? String("  TX ") + device.txPower : ""), 38), COL_MUTED);
     }
     drawFooter("OK RADAR  UP/DOWN MOVER  BACK SALIR");
     pushFrame();
@@ -2308,7 +2416,7 @@ void drawBleRadar() {
     frame.fillCircle(cx, cy, 4, COL_CYAN);
 
     frame.drawRoundRect(154, 38, 154, 84, 5, COL_GRID);
-    drawText(164, 50, fitGpsText(bleNameText(bleTargetName), 18), COL_GREEN);
+    drawText(164, 50, fitGpsText(bleDisplayText(bleTargetName), 18), COL_GREEN);
     drawText(164, 68, String(bleTargetRssi) + " dBm  " + String(pct) + "%", bleTargetSeen ? COL_CYAN : COL_RED);
     drawText(164, 86, String("Peak ") + bleBestRssi + " dBm", bleBestRssi > -127 ? COL_GREEN : COL_MUTED);
     drawText(164, 104, String("Metros ~ ") + bleMetersText(), COL_AMBER);
@@ -2386,7 +2494,7 @@ void runBleDeviceRadarApp() {
                 continue;
             }
             const BleDeviceInfo& device = bleDevices[bleListSelected];
-            strlcpy(bleTargetName, device.name, sizeof(bleTargetName));
+            strlcpy(bleTargetName, device.label, sizeof(bleTargetName));
             strlcpy(bleTargetAddress, device.address, sizeof(bleTargetAddress));
             bleTargetValid = true;
             toneClick(3200, 15);
