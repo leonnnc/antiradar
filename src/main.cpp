@@ -2435,16 +2435,6 @@ void drawBleRadar() {
     frame.drawLine(iconX, iconY - 17, iconX + 10, iconY - 9, COL_CYAN);
     frame.drawLine(iconX, iconY + 17, iconX + 10, iconY + 8, COL_CYAN);
     frame.fillCircle(iconX, iconY, 3, COL_GREEN);
-    drawText(panelX + 28, panelY + 122, "BLE", COL_CYAN);
-
-    const int barBase = panelY + panelH - 10;
-    for (uint8_t i = 0; i < 10; i++) {
-        const uint8_t threshold = i * 10;
-        const bool active = pct > threshold;
-        const int barH = active ? 5 + (i * 2) : 4;
-        const uint16_t color = !active ? COL_GRID : (i > 6 ? COL_GREEN : (i > 3 ? COL_AMBER : COL_RED));
-        frame.fillRect(panelX + 16 + i * 10, barBase - barH, 7, barH, color);
-    }
 
     frame.drawRoundRect(154, 38, 154, 84, 5, COL_GRID);
     drawText(164, 50, fitGpsText(bleDisplayText(bleTargetName), 18), COL_GREEN);
