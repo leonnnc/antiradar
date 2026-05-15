@@ -3975,75 +3975,147 @@ enum DemoLauncherAction : uint8_t {
 };
 
 const HidPadEntry DEMO_LAUNCHER_MENU[] = {
-    {"WIFI LOCATOR", "Radar RSSI + metros + DIR", DEMO_ACT_WIFI},
-    {"BLE RADAR", "Dispositivos Bluetooth cerca", DEMO_ACT_BLE},
-    {"GPS SOS", "Coordenadas grandes", DEMO_ACT_GPS_SOS},
-    {"PASSCODE SIM", "Animacion 9764", DEMO_ACT_PASSCODE},
+    {"WIFI LOCATOR", "Radar RSSI, metros y direccion", DEMO_ACT_WIFI},
+    {"BLE RADAR", "Proximidad de dispositivos BLE", DEMO_ACT_BLE},
+    {"GPS SOS", "Coordenadas grandes de emergencia", DEMO_ACT_GPS_SOS},
+    {"PASSCODE SIM", "Animacion visual 9764", DEMO_ACT_PASSCODE},
     {"HID PAD", "PC control seguro", DEMO_ACT_HID},
-    {"IPHONE REMOTE", "BLE iPhone control", DEMO_ACT_IPHONE},
+    {"IPHONE REMOTE", "Control BLE para iPhone", DEMO_ACT_IPHONE},
     {"RADIO SCOPE", "nRF24 2.4 GHz visual", DEMO_ACT_RADIO},
     {"VOLVER", "Regresar al launcher", DEMO_ACT_BACK},
 };
+
+const char* demoActionTag(uint8_t action) {
+    switch (action) {
+        case DEMO_ACT_WIFI: return "WIFI";
+        case DEMO_ACT_BLE: return "BLE";
+        case DEMO_ACT_GPS_SOS: return "SOS";
+        case DEMO_ACT_PASSCODE: return "SIM";
+        case DEMO_ACT_HID: return "USB";
+        case DEMO_ACT_IPHONE: return "iOS";
+        case DEMO_ACT_RADIO: return "2.4G";
+        default: return "EXIT";
+    }
+}
+
+uint16_t demoActionColor(uint8_t action) {
+    switch (action) {
+        case DEMO_ACT_WIFI: return COL_GREEN;
+        case DEMO_ACT_BLE: return COL_CYAN;
+        case DEMO_ACT_GPS_SOS: return COL_RED;
+        case DEMO_ACT_PASSCODE: return COL_AMBER;
+        case DEMO_ACT_HID: return COL_TEXT;
+        case DEMO_ACT_IPHONE: return COL_CYAN;
+        case DEMO_ACT_RADIO: return COL_GREEN;
+        default: return COL_MUTED;
+    }
+}
 
 void drawDemoLauncherMenu(uint8_t selected, uint8_t scroll) {
     frame.fillSprite(COL_BG);
     drawGrid();
     drawHeader("CYBER DEMO", "reels");
-    drawText(10, 36, "Elige demo, OK da cuenta regresiva.", COL_CYAN);
-
-    const int listY = 58;
-    const int rowH = 25;
-    const uint8_t visible = 6;
     const uint8_t count = sizeof(DEMO_LAUNCHER_MENU) / sizeof(DEMO_LAUNCHER_MENU[0]);
+    const HidPadEntry& active = DEMO_LAUNCHER_MENU[selected];
+    const uint16_t accent = demoActionColor(active.action);
+
+    frame.drawRoundRect(10, 36, 300, 70, 6, accent);
+    frame.fillRect(16, 42, 288, 58, 0x0004);
+    frame.fillRoundRect(22, 50, 42, 28, 5, accent);
+    frame.setTextColor(COL_BG, accent);
+    frame.setTextDatum(MC_DATUM);
+    frame.setTextSize(1);
+    frame.drawString(demoActionTag(active.action), 43, 64, 2);
+    frame.setTextDatum(TL_DATUM);
+    drawTextOn(76, 48, fitText(active.title, 22), COL_TEXT, 0x0004);
+    drawTextOn(76, 66, fitText(active.subtitle, 31), COL_CYAN, 0x0004);
+    drawTextOn(76, 84, "OK lanza cuenta regresiva", COL_MUTED, 0x0004);
+
+    const int listY = 114;
+    const int rowH = 22;
+    const uint8_t visible = 4;
     for (uint8_t row = 0; row < visible; row++) {
         const uint8_t idx = scroll + row;
         if (idx >= count) break;
         const int y = listY + row * rowH;
         const bool isSelected = idx == selected;
-        const uint16_t bg = isSelected ? COL_AMBER : COL_PANEL;
+        const uint16_t rowAccent = demoActionColor(DEMO_LAUNCHER_MENU[idx].action);
+        const uint16_t bg = isSelected ? rowAccent : COL_PANEL;
         const uint16_t fg = isSelected ? COL_BG : COL_TEXT;
-        frame.fillRoundRect(10, y, 300, 21, 4, bg);
-        frame.drawRoundRect(10, y, 300, 21, 4, isSelected ? COL_TEXT : COL_GRID);
-        drawTextOn(18, y + 2, DEMO_LAUNCHER_MENU[idx].title, fg, bg, 1);
+        frame.fillRoundRect(10, y, 300, 19, 4, bg);
+        frame.drawRoundRect(10, y, 300, 19, 4, isSelected ? COL_TEXT : COL_GRID);
+        drawTextOn(18, y + 1, String(idx + 1), isSelected ? COL_BG : rowAccent, bg, 1);
+        drawTextOn(40, y + 1, fitText(DEMO_LAUNCHER_MENU[idx].title, 22), fg, bg, 1);
         frame.setTextDatum(TR_DATUM);
-        frame.setTextColor(isSelected ? COL_BG : COL_MUTED, bg);
-        frame.drawString(DEMO_LAUNCHER_MENU[idx].subtitle, 303, y + 2, 2);
+        frame.setTextColor(isSelected ? COL_BG : rowAccent, bg);
+        frame.drawString(demoActionTag(DEMO_LAUNCHER_MENU[idx].action), 303, y + 1, 2);
         frame.setTextDatum(TL_DATUM);
     }
 
-    drawText(12, 210, "instagram.com/pepeangelll", COL_GREEN);
+    frame.fillRoundRect(12, 202, 296, 13, 4, 0x0004);
+    drawTextOn(18, 201, String("REEL ") + String(selected + 1) + "/" + count + "  MODO ETICO  @pepeangelll", accent, 0x0004, 1);
     drawFooter("UP/DOWN  OK LANZAR  BACK VOLVER");
     pushFrame();
 }
 
-void drawDemoCountdown(const char* title) {
+bool drawDemoCountdown(const HidPadEntry& entry) {
+    const uint16_t accent = demoActionColor(entry.action);
     for (int i = 3; i > 0; i--) {
         frame.fillSprite(COL_BG);
         drawGrid();
-        drawHeader("CYBER DEMO", "standby");
-        frame.drawRoundRect(18, 42, 284, 142, 5, COL_AMBER);
+        drawHeader("CYBER DEMO", "rec ready");
+        frame.drawRoundRect(18, 40, 284, 156, 6, accent);
+        frame.fillRect(24, 46, 272, 144, 0x0004);
         frame.setTextDatum(MC_DATUM);
         frame.setTextSize(1);
-        frame.setTextColor(COL_CYAN, COL_BG);
-        frame.drawString(title, SCREEN_W / 2, 70, 2);
+        frame.setTextColor(COL_CYAN, 0x0004);
+        frame.drawString(demoActionTag(entry.action), SCREEN_W / 2, 60, 2);
+        frame.setTextColor(COL_TEXT, 0x0004);
+        frame.drawString(entry.title, SCREEN_W / 2, 82, 2);
         frame.setTextSize(5);
-        frame.setTextColor(COL_GREEN, COL_BG);
-        frame.drawString(String(i), SCREEN_W / 2, 124, 2);
+        frame.setTextColor(accent, 0x0004);
+        frame.drawString(String(i), SCREEN_W / 2, 130, 2);
         frame.setTextSize(1);
-        frame.setTextColor(COL_MUTED, COL_BG);
-        frame.drawString("prepara camara / encuadre", SCREEN_W / 2, 178, 2);
+        frame.setTextColor(COL_MUTED, 0x0004);
+        frame.drawString("prepara camara / encuadre", SCREEN_W / 2, 176, 2);
         frame.setTextDatum(TL_DATUM);
-        drawFooter("BACK CANCELA DESPUES DE ENTRAR");
+        drawBar(50, 200, 220, 8, ((4 - i) * 33), accent);
+        drawFooter("BACK CANCELA  OK ESPERA");
         pushFrame();
         toneClick(1700 + i * 350, 28);
-        delay(760);
+        for (uint8_t tick = 0; tick < 8; tick++) {
+            const AppAction action = inputRead();
+            if (action == AppAction::Back || action == AppAction::LongSelect) {
+                setStatus("Demo cancelada");
+                return false;
+            }
+            delay(95);
+        }
     }
+
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("CYBER DEMO", "live");
+    frame.drawRoundRect(24, 54, 272, 118, 6, accent);
+    frame.setTextDatum(MC_DATUM);
+    frame.setTextColor(accent, COL_BG);
+    frame.setTextSize(2);
+    frame.drawString("EN VIVO", SCREEN_W / 2, 96, 2);
+    frame.setTextSize(1);
+    frame.setTextColor(COL_TEXT, COL_BG);
+    frame.drawString(entry.title, SCREEN_W / 2, 136, 2);
+    frame.setTextDatum(TL_DATUM);
+    drawFooter("INICIANDO DEMO...");
+    pushFrame();
+    toneClick(3600, 60);
+    delay(260);
+    return true;
 }
 
 void runCyberDemoLauncherApp() {
     currentScreen = Screen::DemoLauncher;
     static uint8_t selected = 0;
-    uint8_t scroll = selected >= 6 ? selected - 5 : 0;
+    uint8_t scroll = selected >= 4 ? selected - 3 : 0;
     const uint8_t count = sizeof(DEMO_LAUNCHER_MENU) / sizeof(DEMO_LAUNCHER_MENU[0]);
     drawDemoLauncherMenu(selected, scroll);
 
@@ -4061,7 +4133,10 @@ void runCyberDemoLauncherApp() {
             const HidPadEntry& entry = DEMO_LAUNCHER_MENU[selected];
             if (entry.action == DEMO_ACT_BACK) break;
             toneClick(3200, 16);
-            drawDemoCountdown(entry.title);
+            if (!drawDemoCountdown(entry)) {
+                drawDemoLauncherMenu(selected, scroll);
+                continue;
+            }
             switch (entry.action) {
                 case DEMO_ACT_WIFI: runWifiLocatorApp(); break;
                 case DEMO_ACT_BLE: runBleDeviceRadarApp(); break;
@@ -4079,7 +4154,7 @@ void runCyberDemoLauncherApp() {
         }
 
         if (selected < scroll) scroll = selected;
-        if (selected >= scroll + 6) scroll = selected - 5;
+        if (selected >= scroll + 4) scroll = selected - 3;
         drawDemoLauncherMenu(selected, scroll);
         delay(4);
     }

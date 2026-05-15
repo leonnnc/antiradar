@@ -157,10 +157,11 @@ Para emergencia real, las coordenadas decimales `LAT` y `LON` son el dato princi
 
 Modo rapido para grabar reels.
 
-- Lista demos principales en un menu dedicado.
-- Al seleccionar una demo muestra cuenta regresiva 3, 2, 1.
+- Lista demos principales con tarjeta destacada, etiqueta de categoria y modo etico visible.
+- Al seleccionar una demo muestra cuenta regresiva 3, 2, 1 con pantalla `EN VIVO`.
+- `BACK` permite cancelar durante la cuenta regresiva antes de lanzar la demo.
 - Lanza WiFi Locator, BLE Radar, GPS SOS, Passcode Sim, HID Pad, iPhone Remote o Radio Scope.
-- Muestra `instagram.com/pepeangelll` como referencia visual dentro del launcher.
+- Muestra `@pepeangelll` como referencia visual dentro del launcher.
 
 ### SD VAULT
 
