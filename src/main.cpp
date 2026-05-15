@@ -2394,49 +2394,54 @@ void drawBleRadar() {
     const int panelY = 42;
     const int panelW = 132;
     const int panelH = 138;
-    const int cx = panelX + panelW / 2;
-    const int cy = panelY + 63;
+    const int iconX = panelX + 43;
+    const int iconY = panelY + 64;
+    const int trackX = panelX + 93;
+    const int trackTop = panelY + 25;
+    const int trackBottom = panelY + 114;
+    const int trackH = trackBottom - trackTop;
 
     frame.fillRoundRect(panelX, panelY, panelW, panelH, 6, 0x0004);
     frame.drawRoundRect(panelX, panelY, panelW, panelH, 6, COL_CYAN);
-    for (uint8_t x = 0; x < 5; x++) {
-        frame.drawFastVLine(panelX + 18 + x * 23, panelY + 8, panelH - 16, COL_GRID);
-    }
-    for (uint8_t y = 0; y < 4; y++) {
-        frame.drawFastHLine(panelX + 8, panelY + 18 + y * 28, panelW - 16, COL_GRID);
+
+    drawText(panelX + 10, panelY + 8, "CERCA", COL_GREEN);
+    drawText(panelX + 10, panelY + panelH - 22, "LEJOS", COL_RED);
+    frame.drawFastVLine(trackX, trackTop, trackH, COL_GRID);
+    for (uint8_t i = 0; i < 5; i++) {
+        const int y = trackTop + (i * trackH) / 4;
+        frame.drawFastHLine(trackX - 14, y, 28, COL_GRID);
     }
 
-    for (uint8_t p = 0; p < 4; p++) {
-        const int phase = (now / 58 + p * 24) % 90;
-        const int size = 22 + phase;
-        const uint16_t color = p == 0 ? dotColor : (p == 1 ? COL_CYAN : (p == 2 ? COL_GRID : 0x03E0));
-        frame.drawRoundRect(cx - size / 2, cy - size / 2, size, size, 7, color);
+    const int fillH = (pct * trackH) / 100;
+    if (fillH > 0) {
+        frame.fillRoundRect(trackX - 7, trackBottom - fillH, 14, fillH, 5, dotColor);
     }
+    const int markerY = bleTargetSeen ? trackBottom - fillH : trackBottom;
+    const int markerPulse = 7 + ((now / 140) % 5);
+    frame.drawCircle(trackX, markerY, markerPulse, dotColor);
+    frame.drawCircle(trackX, markerY, markerPulse + 6, COL_GRID);
+    frame.fillCircle(trackX, markerY, 6, dotColor);
 
-    for (uint8_t lane = 0; lane < 4; lane++) {
-        const int y = panelY + 20 + lane * 25;
-        const int offset = (now / 13 + lane * 29) % (panelW - 28);
-        const int x = panelX + 14 + offset;
-        const uint16_t laneColor = lane % 2 ? COL_AMBER : COL_CYAN;
-        frame.drawFastHLine(panelX + 16, y, panelW - 32, COL_GRID);
-        frame.fillCircle(x, y, 3 + (pct > 68 ? 1 : 0), bleTargetSeen ? laneColor : COL_MUTED);
-        frame.fillCircle(panelX + 14 + ((offset + 54) % (panelW - 28)), y, 2, COL_GRID);
+    for (uint8_t wave = 0; wave < 3; wave++) {
+        const int radius = 18 + ((now / 120 + wave * 9) % 32);
+        const uint16_t color = wave == 0 ? dotColor : (wave == 1 ? COL_CYAN : COL_GRID);
+        frame.drawCircle(iconX, iconY, radius, bleTargetSeen ? color : COL_MUTED);
     }
-
-    frame.fillRoundRect(cx - 15, cy - 25, 30, 50, 6, COL_PANEL);
-    frame.drawRoundRect(cx - 15, cy - 25, 30, 50, 6, dotColor);
-    frame.drawLine(cx, cy - 17, cx, cy + 17, COL_CYAN);
-    frame.drawLine(cx, cy - 1, cx + 11, cy - 10, COL_CYAN);
-    frame.drawLine(cx, cy - 1, cx + 11, cy + 8, COL_CYAN);
-    frame.drawLine(cx, cy - 17, cx + 10, cy - 9, COL_CYAN);
-    frame.drawLine(cx, cy + 17, cx + 10, cy + 8, COL_CYAN);
-    frame.fillCircle(cx, cy, 3, COL_GREEN);
+    frame.fillRoundRect(iconX - 15, iconY - 25, 30, 50, 6, COL_PANEL);
+    frame.drawRoundRect(iconX - 15, iconY - 25, 30, 50, 6, dotColor);
+    frame.drawLine(iconX, iconY - 17, iconX, iconY + 17, COL_CYAN);
+    frame.drawLine(iconX, iconY - 1, iconX + 11, iconY - 10, COL_CYAN);
+    frame.drawLine(iconX, iconY - 1, iconX + 11, iconY + 8, COL_CYAN);
+    frame.drawLine(iconX, iconY - 17, iconX + 10, iconY - 9, COL_CYAN);
+    frame.drawLine(iconX, iconY + 17, iconX + 10, iconY + 8, COL_CYAN);
+    frame.fillCircle(iconX, iconY, 3, COL_GREEN);
+    drawText(panelX + 28, panelY + 122, "BLE", COL_CYAN);
 
     const int barBase = panelY + panelH - 10;
     for (uint8_t i = 0; i < 10; i++) {
         const uint8_t threshold = i * 10;
         const bool active = pct > threshold;
-        const int barH = active ? 5 + ((pct + i * 9) % 25) : 4;
+        const int barH = active ? 5 + (i * 2) : 4;
         const uint16_t color = !active ? COL_GRID : (i > 6 ? COL_GREEN : (i > 3 ? COL_AMBER : COL_RED));
         frame.fillRect(panelX + 16 + i * 10, barBase - barH, 7, barH, color);
     }
