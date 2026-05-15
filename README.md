@@ -167,6 +167,41 @@ Pantalla de emergencia pensada para hiking o situaciones donde necesitas dictar 
 
 Para emergencia real, las coordenadas decimales `LAT` y `LON` son el dato principal.
 
+### INSTA MONITOR
+
+Monitor visual de estadisticas publicas/permitidas de Instagram mediante un endpoint propio.
+
+- Incluye teclado virtual para escribir un usuario de Instagram.
+- Usa `UP/DOWN` para cambiar la tecla y `OK` para escribir.
+- La tecla `GO` consulta el endpoint configurado.
+- `BACK` borra el ultimo caracter; si el usuario queda vacio, vuelve al menu.
+- Lee configuracion desde `/APPS/IG/CONFIG.TXT`.
+- Si no existe la configuracion, crea una plantilla segura en la microSD.
+- No guarda tokens ni credenciales de Meta dentro del firmware.
+- Espera un JSON simple con `username`, `followers` o `followers_count`, y `media` o `media_count`.
+- Guarda historial por usuario en `/APPS/IG/<usuario>.csv` con fecha, followers, media y delta.
+
+Ejemplo de `/APPS/IG/CONFIG.TXT`:
+
+```txt
+WIFI_SSID=TuWiFi
+WIFI_PASS=TuPassword
+API_URL=https://tu-api.com/ig?user={user}
+```
+
+Ejemplo de respuesta JSON esperada:
+
+```json
+{
+  "status": "ok",
+  "username": "pepeangelll",
+  "followers": 12345,
+  "media": 120
+}
+```
+
+La consulta a Instagram debe hacerse desde un backend propio usando APIs permitidas, por ejemplo Meta Graph API para cuentas profesionales autorizadas. Evita scraping y no publiques tokens.
+
 ### CYBER DEMO LAUNCHER
 
 Modo rapido para grabar reels.
@@ -174,7 +209,7 @@ Modo rapido para grabar reels.
 - Lista demos principales con tarjeta destacada, etiqueta de categoria y modo etico visible.
 - Al seleccionar una demo muestra cuenta regresiva 3, 2, 1 con pantalla `EN VIVO`.
 - `BACK` permite cancelar durante la cuenta regresiva antes de lanzar la demo.
-- Lanza WiFi Locator, WiFi Channels, BLE Radar, GPS SOS, Passcode Sim, HID Pad, iPhone Remote o Radio Scope.
+- Lanza WiFi Locator, WiFi Channels, BLE Radar, GPS SOS, Insta Monitor, Passcode Sim, HID Pad, iPhone Remote o Radio Scope.
 - Muestra `@pepeangelll` como referencia visual dentro del launcher.
 
 ### SD VAULT

@@ -6,6 +6,9 @@
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
 #include <BLEAdvertisedDevice.h>
 #include <BLEDevice.h>
 #include <BLEHIDDevice.h>
@@ -102,6 +105,7 @@ enum class Screen : uint8_t {
     BleRadar,
     GpsSos,
     DemoLauncher,
+    InstaMonitor,
     SdVault,
     RadioScope,
     PasscodeSim,
@@ -125,6 +129,7 @@ const MenuEntry MENU[] = {
     {"BLE DEVICE RADAR", "Radar de dispositivos Bluetooth", Screen::BleRadar},
     {"GPS SOS MODE", "Coordenadas grandes para emergencia", Screen::GpsSos},
     {"CYBER DEMO", "Launcher rapido para reels", Screen::DemoLauncher},
+    {"INSTA MONITOR", "Seguidores por API segura", Screen::InstaMonitor},
     {"SD VAULT", "microSD y prueba de escritura", Screen::SdVault},
     {"RADIO SCOPE", "Escaneo pasivo 2.4 GHz", Screen::RadioScope},
     {"PASSCODE SIM", "Demo visual de PIN", Screen::PasscodeSim},
@@ -186,6 +191,22 @@ struct BleDeviceInfo {
     bool hasTxPower;
     bool hasManufacturer;
     bool hasAppearance;
+};
+
+struct IgMonitorConfig {
+    char wifiSsid[33];
+    char wifiPass[65];
+    char apiUrl[160];
+    bool loaded;
+};
+
+struct IgMonitorResult {
+    char username[32];
+    uint32_t followers;
+    uint32_t media;
+    int32_t delta;
+    bool ok;
+    char status[48];
 };
 
 const GpsPlace GPS_PLACES[] = {
@@ -258,6 +279,11 @@ int16_t bleTrendDb = 0;
 int16_t bleHistory[BLE_HISTORY_LEN] = {};
 uint8_t bleHistoryHead = 0;
 uint32_t bleScanPass = 0;
+IgMonitorConfig igConfig = {};
+IgMonitorResult igResult = {};
+char igUsername[32] = "pepeangelll";
+uint8_t igKeyboardIndex = 15;
+bool igHasResult = false;
 
 class BleRemoteServerCallbacks : public BLEServerCallbacks {
 public:
@@ -565,6 +591,18 @@ bool appendTextFile(const char* path, const String& content) {
     f.print(content);
     f.close();
     return true;
+}
+
+String readTextFile(const char* path, size_t maxLen = 2048) {
+    if (!beginSdCard()) return "";
+    File f = SD.open(path, FILE_READ);
+    if (!f) return "";
+    String out;
+    while (f.available() && out.length() < maxLen) {
+        out += (char)f.read();
+    }
+    f.close();
+    return out;
 }
 
 void countRootFiles(uint16_t& dirs, uint16_t& files) {
@@ -2015,6 +2053,361 @@ void runWifiChannelAnalyzerApp() {
                 continue;
             }
         }
+        delay(4);
+    }
+}
+
+const char IG_KEYS[] = "abcdefghijklmnopqrstuvwxyz0123456789._<>";
+
+String igConfigTemplate() {
+    String out;
+    out += "# CYBERDECK Insta Monitor\r\n";
+    out += "# No pongas tokens de Meta dentro del firmware publico.\r\n";
+    out += "WIFI_SSID=TuWiFi\r\n";
+    out += "WIFI_PASS=TuPassword\r\n";
+    out += "API_URL=https://tu-api.com/ig?user={user}\r\n";
+    return out;
+}
+
+String igTrimValue(String value) {
+    value.trim();
+    if (value.startsWith("\"") && value.endsWith("\"") && value.length() > 1) {
+        value = value.substring(1, value.length() - 1);
+    }
+    return value;
+}
+
+bool igLoadConfig() {
+    memset(&igConfig, 0, sizeof(igConfig));
+    if (beginSdCard()) {
+        SD.mkdir("/APPS");
+        SD.mkdir("/APPS/IG");
+    }
+
+    String config = readTextFile("/APPS/IG/CONFIG.TXT", 1024);
+    if (config.length() == 0) {
+        writeTextFile("/APPS/IG/CONFIG.TXT", igConfigTemplate());
+        setStatus("IG config sample created");
+        return false;
+    }
+
+    int start = 0;
+    while (start < (int)config.length()) {
+        int end = config.indexOf('\n', start);
+        if (end < 0) end = config.length();
+        String line = config.substring(start, end);
+        line.trim();
+        start = end + 1;
+        if (line.length() == 0 || line.startsWith("#")) continue;
+        const int eq = line.indexOf('=');
+        if (eq < 0) continue;
+        String key = line.substring(0, eq);
+        String value = igTrimValue(line.substring(eq + 1));
+        key.trim();
+        key.toUpperCase();
+        if (key == "WIFI_SSID") value.toCharArray(igConfig.wifiSsid, sizeof(igConfig.wifiSsid));
+        else if (key == "WIFI_PASS") value.toCharArray(igConfig.wifiPass, sizeof(igConfig.wifiPass));
+        else if (key == "API_URL") value.toCharArray(igConfig.apiUrl, sizeof(igConfig.apiUrl));
+    }
+
+    igConfig.loaded = igConfig.wifiSsid[0] != '\0' && igConfig.apiUrl[0] != '\0';
+    return igConfig.loaded;
+}
+
+String igSafeUsername(const char* username) {
+    String safe = username;
+    safe.toLowerCase();
+    String out;
+    for (uint16_t i = 0; i < safe.length() && out.length() < 30; i++) {
+        const char c = safe[i];
+        if (isalnum((unsigned char)c) || c == '_' || c == '.') out += c;
+    }
+    if (out.length() == 0) out = "unknown";
+    return out;
+}
+
+String igHistoryPath(const char* username) {
+    return String("/APPS/IG/") + igSafeUsername(username) + ".csv";
+}
+
+String igTimestampText() {
+    if (gps.date.isValid() && gps.time.isValid()) {
+        char out[24];
+        snprintf(out, sizeof(out), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                 gps.date.year(), gps.date.month(), gps.date.day(),
+                 gps.time.hour(), gps.time.minute(), gps.time.second());
+        return String(out);
+    }
+    return String("uptime_") + uptimeText();
+}
+
+uint32_t igReadLastFollowers(const char* username, bool& hasValue) {
+    hasValue = false;
+    String data = readTextFile(igHistoryPath(username).c_str(), 4096);
+    data.trim();
+    if (data.length() == 0) return 0;
+
+    int lineStart = data.lastIndexOf('\n');
+    if (lineStart >= 0) lineStart++;
+    else lineStart = 0;
+    String line = data.substring(lineStart);
+    line.trim();
+    if (line.startsWith("timestamp")) return 0;
+
+    const int p1 = line.indexOf(',');
+    const int p2 = p1 < 0 ? -1 : line.indexOf(',', p1 + 1);
+    if (p1 < 0 || p2 < 0) return 0;
+    hasValue = true;
+    return (uint32_t)line.substring(p1 + 1, p2).toInt();
+}
+
+void igAppendHistory(const IgMonitorResult& result) {
+    if (beginSdCard()) {
+        SD.mkdir("/APPS");
+        SD.mkdir("/APPS/IG");
+    }
+    const String path = igHistoryPath(result.username);
+    if (readTextFile(path.c_str(), 32).length() == 0) {
+        appendTextFile(path.c_str(), "timestamp,followers,media,delta\r\n");
+    }
+    String line;
+    line += igTimestampText() + ",";
+    line += String(result.followers) + ",";
+    line += String(result.media) + ",";
+    line += String(result.delta) + "\r\n";
+    appendTextFile(path.c_str(), line);
+}
+
+String igBuildUrl(const char* username) {
+    String url = igConfig.apiUrl;
+    const String user = igSafeUsername(username);
+    if (url.indexOf("{user}") >= 0) {
+        url.replace("{user}", user);
+    } else {
+        url += (url.indexOf('?') >= 0) ? "&user=" : "?user=";
+        url += user;
+    }
+    return url;
+}
+
+void drawIgStatus(const char* line, uint16_t color = COL_CYAN) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("INSTA MONITOR", "online");
+    frame.drawRoundRect(18, 52, 284, 118, 5, color);
+    drawText(34, 76, line, color);
+    drawText(34, 104, "Consulta tu endpoint autorizado.", COL_MUTED);
+    drawText(34, 130, "Sin scraping, sin tokens en firmware.", COL_AMBER);
+    drawFooter("BACK CANCELA");
+    pushFrame();
+}
+
+bool igConnectWifi() {
+    if (WiFi.status() == WL_CONNECTED) return true;
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(false);
+    delay(120);
+    WiFi.begin(igConfig.wifiSsid, igConfig.wifiPass);
+    const uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 14000) {
+        drawIgStatus("Conectando WiFi...");
+        serviceGps(2);
+        delay(240);
+        if (inputRead() == AppAction::Back) return false;
+    }
+    return WiFi.status() == WL_CONNECTED;
+}
+
+uint32_t igJsonNumber(JsonDocument& doc, const char* a, const char* b) {
+    if (doc[a].is<uint32_t>()) return doc[a].as<uint32_t>();
+    if (doc[b].is<uint32_t>()) return doc[b].as<uint32_t>();
+    return 0;
+}
+
+bool igFetchStats() {
+    memset(&igResult, 0, sizeof(igResult));
+    igSafeUsername(igUsername).toCharArray(igResult.username, sizeof(igResult.username));
+    igHasResult = false;
+
+    if (!igLoadConfig()) {
+        strlcpy(igResult.status, "Config SD creada", sizeof(igResult.status));
+        setStatus("IG config needed");
+        return false;
+    }
+
+    if (!igConnectWifi()) {
+        strlcpy(igResult.status, "WiFi fallo", sizeof(igResult.status));
+        setStatus("IG WiFi failed");
+        return false;
+    }
+
+    const String url = igBuildUrl(igUsername);
+    drawIgStatus("Consultando API...");
+    HTTPClient http;
+    WiFiClient plainClient;
+    WiFiClientSecure secureClient;
+    bool begun = false;
+    if (url.startsWith("https://")) {
+        secureClient.setInsecure();
+        begun = http.begin(secureClient, url);
+    } else {
+        begun = http.begin(plainClient, url);
+    }
+    if (!begun) {
+        strlcpy(igResult.status, "URL invalida", sizeof(igResult.status));
+        setStatus("IG URL invalid");
+        return false;
+    }
+    http.setTimeout(12000);
+    const int code = http.GET();
+    if (code <= 0) {
+        http.end();
+        snprintf(igResult.status, sizeof(igResult.status), "HTTP error %d", code);
+        setStatus("IG HTTP failed");
+        return false;
+    }
+    const String payload = http.getString();
+    http.end();
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    if (error) {
+        strlcpy(igResult.status, "JSON invalido", sizeof(igResult.status));
+        setStatus("IG JSON failed");
+        return false;
+    }
+
+    const char* apiStatus = doc["status"] | "ok";
+    if (strcmp(apiStatus, "ok") != 0 && !doc["followers"].is<uint32_t>() && !doc["followers_count"].is<uint32_t>()) {
+        const char* apiError = doc["error"] | apiStatus;
+        strlcpy(igResult.status, apiError, sizeof(igResult.status));
+        setStatus("IG API returned error");
+        return false;
+    }
+
+    const char* returnedUser = doc["username"] | igResult.username;
+    igSafeUsername(returnedUser).toCharArray(igResult.username, sizeof(igResult.username));
+    igResult.followers = igJsonNumber(doc, "followers", "followers_count");
+    igResult.media = igJsonNumber(doc, "media", "media_count");
+    bool hadLast = false;
+    const uint32_t lastFollowers = igReadLastFollowers(igResult.username, hadLast);
+    igResult.delta = hadLast ? (int32_t)igResult.followers - (int32_t)lastFollowers : 0;
+    igResult.ok = igResult.followers > 0 || doc["followers"].is<uint32_t>() || doc["followers_count"].is<uint32_t>();
+    strlcpy(igResult.status, igResult.ok ? "OK" : "Sin followers", sizeof(igResult.status));
+    if (igResult.ok) {
+        igAppendHistory(igResult);
+        igHasResult = true;
+        setStatus("IG stats saved");
+    }
+    return igResult.ok;
+}
+
+String igCurrentKeyText() {
+    const char key = IG_KEYS[igKeyboardIndex];
+    if (key == '>') return "GO";
+    if (key == '<') return "DEL";
+    return String(key);
+}
+
+void drawInstaMonitor() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("INSTA MONITOR", igHasResult ? "stats" : "teclado");
+
+    frame.drawRoundRect(10, 36, 300, 52, 5, COL_AMBER);
+    frame.fillRect(16, 42, 288, 40, 0x0004);
+    drawTextOn(24, 46, "Usuario Instagram", COL_MUTED, 0x0004);
+    drawTextOn(24, 64, String("@") + fitText(igUsername, 28), COL_TEXT, 0x0004);
+
+    frame.drawRoundRect(10, 96, 96, 78, 5, COL_CYAN);
+    frame.setTextDatum(MC_DATUM);
+    frame.setTextColor(COL_CYAN, COL_BG);
+    frame.setTextSize(3);
+    frame.drawString(igCurrentKeyText(), 58, 133, 2);
+    frame.setTextSize(1);
+    frame.setTextColor(COL_MUTED, COL_BG);
+    frame.drawString("UP/DOWN tecla", 58, 164, 1);
+    frame.setTextDatum(TL_DATUM);
+
+    frame.drawRoundRect(116, 96, 194, 78, 5, igHasResult ? COL_GREEN : COL_GRID);
+    if (igHasResult) {
+        drawText(126, 106, String("@") + fitText(igResult.username, 20), COL_GREEN);
+        drawText(126, 126, String("Followers ") + igResult.followers, COL_TEXT);
+        drawText(126, 144, String("Media ") + igResult.media + "  Delta " + (igResult.delta >= 0 ? "+" : "") + igResult.delta,
+                 igResult.delta >= 0 ? COL_GREEN : COL_RED);
+        drawText(126, 160, "Guardado en /APPS/IG", COL_MUTED);
+    } else {
+        drawText(126, 108, "OK agrega tecla", COL_CYAN);
+        drawText(126, 126, "Selecciona GO para consultar", COL_GREEN);
+        drawText(126, 144, "BACK borra / vacio sale", COL_AMBER);
+        drawText(126, 162, "Config: /APPS/IG/CONFIG.TXT", igConfig.loaded ? COL_GREEN : COL_MUTED);
+    }
+
+    frame.drawRoundRect(10, 182, 300, 30, 5, COL_GRID);
+    drawText(20, 192, fitText(String("Estado: ") + (igResult.status[0] ? igResult.status : statusLine), 36),
+             igResult.ok ? COL_GREEN : COL_CYAN);
+    drawFooter("UP/DOWN TECLA  OK ADD/GO  BACK BORRA");
+    pushFrame();
+}
+
+void runInstaMonitorApp() {
+    currentScreen = Screen::InstaMonitor;
+    igLoadConfig();
+    igResult = {};
+    igHasResult = false;
+    drawInstaMonitor();
+
+    while (true) {
+        serviceGps(3);
+        const AppAction action = inputRead();
+        if (action == AppAction::LongSelect) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+        if (action == AppAction::Up) {
+            const uint8_t len = strlen(IG_KEYS);
+            igKeyboardIndex = (igKeyboardIndex == 0) ? len - 1 : igKeyboardIndex - 1;
+            toneClick();
+        } else if (action == AppAction::Down) {
+            igKeyboardIndex = (igKeyboardIndex + 1) % strlen(IG_KEYS);
+            toneClick();
+        } else if (action == AppAction::Back) {
+            const size_t len = strlen(igUsername);
+            if (len == 0) {
+                currentScreen = Screen::Home;
+                setStatus("Ready");
+                drawHome();
+                pushFrame();
+                return;
+            }
+            igUsername[len - 1] = '\0';
+            igHasResult = false;
+            toneClick(1200, 10);
+        } else if (action == AppAction::Select) {
+            const char key = IG_KEYS[igKeyboardIndex];
+            if (key == '>') {
+                toneClick(3200, 18);
+                igFetchStats();
+            } else if (key == '<') {
+                const size_t len = strlen(igUsername);
+                if (len > 0) igUsername[len - 1] = '\0';
+                igHasResult = false;
+                toneClick(1200, 10);
+            } else if (strlen(igUsername) < sizeof(igUsername) - 1) {
+                const size_t len = strlen(igUsername);
+                igUsername[len] = key;
+                igUsername[len + 1] = '\0';
+                igHasResult = false;
+                toneClick(2600, 10);
+            }
+        } else {
+            delay(4);
+            continue;
+        }
+        drawInstaMonitor();
         delay(4);
     }
 }
@@ -4259,6 +4652,7 @@ enum DemoLauncherAction : uint8_t {
     DEMO_ACT_WIFI_CH,
     DEMO_ACT_BLE,
     DEMO_ACT_GPS_SOS,
+    DEMO_ACT_INSTA,
     DEMO_ACT_PASSCODE,
     DEMO_ACT_HID,
     DEMO_ACT_IPHONE,
@@ -4270,6 +4664,7 @@ const HidPadEntry DEMO_LAUNCHER_MENU[] = {
     {"WIFI CHANNELS", "Saturacion por canal 1-14", DEMO_ACT_WIFI_CH},
     {"BLE RADAR", "Proximidad de dispositivos BLE", DEMO_ACT_BLE},
     {"GPS SOS", "Coordenadas grandes de emergencia", DEMO_ACT_GPS_SOS},
+    {"INSTA MONITOR", "Seguidores desde API segura", DEMO_ACT_INSTA},
     {"PASSCODE SIM", "Animacion visual 9764", DEMO_ACT_PASSCODE},
     {"HID PAD", "PC control seguro", DEMO_ACT_HID},
     {"IPHONE REMOTE", "Control BLE para iPhone", DEMO_ACT_IPHONE},
@@ -4283,6 +4678,7 @@ const char* demoActionTag(uint8_t action) {
         case DEMO_ACT_WIFI_CH: return "CH";
         case DEMO_ACT_BLE: return "BLE";
         case DEMO_ACT_GPS_SOS: return "SOS";
+        case DEMO_ACT_INSTA: return "IG";
         case DEMO_ACT_PASSCODE: return "SIM";
         case DEMO_ACT_HID: return "USB";
         case DEMO_ACT_IPHONE: return "iOS";
@@ -4297,6 +4693,7 @@ uint16_t demoActionColor(uint8_t action) {
         case DEMO_ACT_WIFI_CH: return COL_AMBER;
         case DEMO_ACT_BLE: return COL_CYAN;
         case DEMO_ACT_GPS_SOS: return COL_RED;
+        case DEMO_ACT_INSTA: return COL_AMBER;
         case DEMO_ACT_PASSCODE: return COL_AMBER;
         case DEMO_ACT_HID: return COL_TEXT;
         case DEMO_ACT_IPHONE: return COL_CYAN;
@@ -4436,6 +4833,7 @@ void runCyberDemoLauncherApp() {
                 case DEMO_ACT_WIFI_CH: runWifiChannelAnalyzerApp(); break;
                 case DEMO_ACT_BLE: runBleDeviceRadarApp(); break;
                 case DEMO_ACT_GPS_SOS: runGpsSosApp(); break;
+                case DEMO_ACT_INSTA: runInstaMonitorApp(); break;
                 case DEMO_ACT_PASSCODE: runPasscodeSimApp(); break;
                 case DEMO_ACT_HID: runHidPadApp(); break;
                 case DEMO_ACT_IPHONE: runIphoneRemoteApp(); break;
@@ -4503,6 +4901,7 @@ void renderCurrent() {
         case Screen::BleRadar: drawHome(); break;
         case Screen::GpsSos: drawHome(); break;
         case Screen::DemoLauncher: drawHome(); break;
+        case Screen::InstaMonitor: drawHome(); break;
         case Screen::SdVault: drawSdVault(); break;
         case Screen::RadioScope: drawRadioScope(); break;
         case Screen::PasscodeSim: drawHome(); break;
@@ -4557,6 +4956,10 @@ void handleAction(AppAction action) {
             } else if (MENU[menuIndex].screen == Screen::DemoLauncher) {
                 toneClick(3200, 18);
                 runCyberDemoLauncherApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::InstaMonitor) {
+                toneClick(3200, 18);
+                runInstaMonitorApp();
                 return;
             } else if (MENU[menuIndex].screen == Screen::RadioScope) {
                 toneClick(3200, 18);
