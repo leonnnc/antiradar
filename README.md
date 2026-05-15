@@ -121,6 +121,45 @@ Limitacion importante:
 
 El ESP32-S3 tiene una sola antena WiFi, asi que no puede saber la direccion real exacta de una red como una brujula. El radar, los metros aproximados y `DIR SCAN` son relativos: sirven para caminar, girar, comparar intensidad y buscar el punto de mayor senal. Para direccion real o distancia exacta se necesitaria hardware con varias antenas, antena direccional o mediciones con GPS/triangulacion mas avanzada.
 
+### BLE DEVICE RADAR
+
+Radar pasivo de anuncios Bluetooth Low Energy cercanos.
+
+- Escanea dispositivos BLE cercanos.
+- Muestra nombre, direccion MAC BLE, RSSI, servicios anunciados y potencia TX cuando esta disponible.
+- Permite seleccionar un dispositivo por direccion.
+- Abre un radar visual con sweep, punto de intensidad, historial RSSI y distancia aproximada.
+- Muestra tendencia `ACERCANDOTE`, `ALEJANDOTE`, `ESTABLE` o `BUSCANDO`.
+- No se conecta al dispositivo.
+- No empareja.
+- No lee servicios privados.
+- No envia paquetes de ataque.
+
+Limitacion importante:
+
+BLE DEVICE RADAR mide anuncios BLE visibles. Algunos telefonos y accesorios cambian de MAC por privacidad, asi que un dispositivo puede aparecer con direccion distinta despues de cierto tiempo.
+
+### GPS SOS MODE
+
+Pantalla de emergencia pensada para hiking o situaciones donde necesitas dictar ubicacion rapido.
+
+- Muestra latitud y longitud en grande.
+- Muestra altitud, hora UTC, satelites, HDOP y bateria.
+- Muestra lugar aproximado si la base offline esta disponible.
+- `OK` guarda snapshot SOS en `/APPS/SOS_LAST.txt` y `/APPS/GPS/SOS_LAST.txt`.
+- El snapshot incluye coordenadas, altitud, bateria, satelites, HDOP, lugar aproximado y enlace de Google Maps.
+
+Para emergencia real, las coordenadas decimales `LAT` y `LON` son el dato principal.
+
+### CYBER DEMO LAUNCHER
+
+Modo rapido para grabar reels.
+
+- Lista demos principales en un menu dedicado.
+- Al seleccionar una demo muestra cuenta regresiva 3, 2, 1.
+- Lanza WiFi Locator, BLE Radar, GPS SOS, Passcode Sim, HID Pad, iPhone Remote o Radio Scope.
+- Muestra `instagram.com/pepeangelll` como referencia visual dentro del launcher.
+
 ### SD VAULT
 
 Herramienta de prueba y diagnostico para la tarjeta microSD.

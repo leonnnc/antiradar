@@ -6,8 +6,10 @@
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
 #include <WiFi.h>
+#include <BLEAdvertisedDevice.h>
 #include <BLEDevice.h>
 #include <BLEHIDDevice.h>
+#include <BLEScan.h>
 #include <BLESecurity.h>
 #include <esp_bt.h>
 #include "USB.h"
@@ -86,12 +88,17 @@ constexpr float GPS_PLACE_RESCAN_KM = 1.0f;
 constexpr uint32_t GPS_PLACE_MAX_ROWS = 65000;
 constexpr uint8_t WIFI_MAX_APS = 24;
 constexpr uint8_t WIFI_HISTORY_LEN = 44;
+constexpr uint8_t BLE_MAX_DEVICES = 24;
+constexpr uint8_t BLE_HISTORY_LEN = 36;
 
 enum class Screen : uint8_t {
     Home,
     SystemPulse,
     GpsRadar,
     WifiLocator,
+    BleRadar,
+    GpsSos,
+    DemoLauncher,
     SdVault,
     RadioScope,
     PasscodeSim,
@@ -111,6 +118,9 @@ const MenuEntry MENU[] = {
     {"SYSTEM PULSE", "Hardware live dashboard", Screen::SystemPulse},
     {"GPS RADAR", "Ubicacion real, altitud y lugar", Screen::GpsRadar},
     {"WIFI LOCATOR", "Lista redes y radar RSSI", Screen::WifiLocator},
+    {"BLE DEVICE RADAR", "Radar de dispositivos Bluetooth", Screen::BleRadar},
+    {"GPS SOS MODE", "Coordenadas grandes para emergencia", Screen::GpsSos},
+    {"CYBER DEMO", "Launcher rapido para reels", Screen::DemoLauncher},
     {"SD VAULT", "microSD status and test write", Screen::SdVault},
     {"RADIO SCOPE", "Passive nRF24 2.4 GHz scan", Screen::RadioScope},
     {"PASSCODE SIM", "15 sec cinematic PIN demo", Screen::PasscodeSim},
@@ -157,6 +167,17 @@ struct WifiApInfo {
     bool hidden;
 };
 
+struct BleDeviceInfo {
+    char name[28];
+    char address[18];
+    int32_t rssi;
+    int32_t bestRssi;
+    int8_t txPower;
+    uint8_t serviceCount;
+    bool hasName;
+    bool hasTxPower;
+};
+
 const GpsPlace GPS_PLACES[] = {
     {"Chihuahua", "Chihuahua", "Chihuahua MX", 28.6353f, -106.0889f, 65},
     {"Ciudad Juarez", "Juarez", "Chihuahua MX", 31.6904f, -106.4245f, 70},
@@ -200,6 +221,24 @@ uint32_t wifiScanPass = 0;
 uint32_t wifiLastTargetScanMs = 0;
 uint32_t wifiAsyncScanStartedMs = 0;
 bool wifiAsyncScanActive = false;
+bool btClassicReleased = false;
+bool bleStackReady = false;
+BLEScan* bleScan = nullptr;
+BleDeviceInfo bleDevices[BLE_MAX_DEVICES] = {};
+uint8_t bleDeviceCount = 0;
+uint8_t bleListSelected = 0;
+uint8_t bleListScroll = 0;
+bool bleTargetValid = false;
+bool bleTargetSeen = false;
+char bleTargetName[28] = "";
+char bleTargetAddress[18] = "";
+int32_t bleTargetRssi = -127;
+int32_t bleLastTargetRssi = -127;
+int32_t bleBestRssi = -127;
+int16_t bleTrendDb = 0;
+int16_t bleHistory[BLE_HISTORY_LEN] = {};
+uint8_t bleHistoryHead = 0;
+uint32_t bleScanPass = 0;
 
 class BleRemoteServerCallbacks : public BLEServerCallbacks {
 public:
@@ -349,6 +388,12 @@ void releaseFrameForBleStartup() {
     }
     drawDirectStatus("INICIANDO BLE", "Liberando memoria de pantalla...", COL_AMBER);
     delay(80);
+}
+
+void releaseClassicBtMemoryOnce() {
+    if (btClassicReleased) return;
+    esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+    btClassicReleased = true;
 }
 
 bool recreateFrameAfterBleStartup() {
@@ -1128,6 +1173,115 @@ void runGpsRadarApp() {
     }
 }
 
+bool saveGpsSosSnapshot() {
+    if (beginSdCard()) {
+        SD.mkdir("/APPS");
+        SD.mkdir("/APPS/GPS");
+    }
+    updateGpsResolvedPlace(true);
+
+    String out;
+    out += "CYBERDECK GPS SOS SNAPSHOT\r\n";
+    out += "Fix: " + String(gps.location.isValid() ? "YES" : "NO") + "\r\n";
+    out += "UTC: " + gpsTimeText() + "\r\n";
+    out += "Battery: " + String(batteryVolts, 2) + "V (" + String(batteryPct) + "%)\r\n";
+    out += "Satellites: " + String(gps.satellites.value()) + "\r\n";
+    out += "HDOP: " + gpsHdopText() + "\r\n";
+    if (gps.location.isValid()) {
+        out += "LAT: " + String(gps.location.lat(), 6) + "\r\n";
+        out += "LON: " + String(gps.location.lng(), 6) + "\r\n";
+        out += "LAT DMS: " + gpsDmsText(gps.location.lat(), "N", "S") + "\r\n";
+        out += "LON DMS: " + gpsDmsText(gps.location.lng(), "E", "W") + "\r\n";
+        out += "ALT: " + gpsAltText() + "\r\n";
+        out += "MAPS: https://maps.google.com/?q=" + String(gps.location.lat(), 6) + "," + String(gps.location.lng(), 6) + "\r\n";
+    }
+    if (gpsResolvedPlace.valid) {
+        out += "Nearest: " + String(gpsResolvedPlace.city) + ", " + gpsResolvedPlace.state + ", " + gpsResolvedPlace.country + "\r\n";
+        out += "Distance: " + gpsKmText(gpsResolvedPlace.km) + "\r\n";
+    }
+
+    const bool ok1 = writeTextFile("/APPS/SOS_LAST.txt", out);
+    const bool ok2 = writeTextFile("/APPS/GPS/SOS_LAST.txt", out);
+    setStatus((ok1 || ok2) ? "SOS snapshot saved" : "SOS save failed");
+    return ok1 || ok2;
+}
+
+void drawGpsSos() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    const bool nmeaLive = gps.charsProcessed() > 0 && (millis() - gpsLastCharMs) < 2500;
+    const bool hasFix = gps.location.isValid();
+    updateGpsResolvedPlace(false);
+    drawHeader("GPS SOS MODE", hasFix ? "fix listo" : (nmeaLive ? "buscando" : "sin rx"));
+
+    frame.drawRoundRect(8, 36, 304, 118, 5, hasFix ? COL_GREEN : COL_AMBER);
+    frame.fillRect(14, 42, 292, 106, 0x0004);
+    frame.setTextDatum(TL_DATUM);
+    frame.setTextSize(1);
+    if (hasFix) {
+        frame.setTextColor(COL_GREEN, 0x0004);
+        frame.drawString("LAT", 24, 52, 2);
+        frame.setTextColor(COL_TEXT, 0x0004);
+        frame.drawString(String(gps.location.lat(), 6), 72, 48, 4);
+        frame.setTextColor(COL_GREEN, 0x0004);
+        frame.drawString("LON", 24, 90, 2);
+        frame.setTextColor(COL_TEXT, 0x0004);
+        frame.drawString(String(gps.location.lng(), 6), 72, 86, 4);
+        drawTextOn(24, 128, String("ALT ") + gpsAltText() + "  UTC " + gpsTimeText(), COL_CYAN, 0x0004);
+    } else {
+        drawTextOn(26, 62, nmeaLive ? "GPS conectado, esperando fix." : "Sin datos GPS en RX18.", hasFix ? COL_GREEN : COL_AMBER, 0x0004);
+        drawTextOn(26, 90, "Sal a cielo abierto y espera satelites.", COL_CYAN, 0x0004);
+        drawTextOn(26, 118, String("Chars ") + gps.charsProcessed() + "  RX " + gpsCharsPerSec + "/s", COL_MUTED, 0x0004);
+    }
+
+    frame.drawRoundRect(8, 162, 148, 48, 5, COL_GRID);
+    drawText(18, 174, String("SAT ") + gps.satellites.value() + "  HDOP " + gpsHdopText(), hasFix ? COL_GREEN : COL_AMBER);
+    drawText(18, 194, String("BAT ") + batteryPct + "% " + String(batteryVolts, 2) + "V", batteryPct < 20 ? COL_RED : COL_CYAN);
+
+    frame.drawRoundRect(164, 162, 148, 48, 5, COL_GRID);
+    if (gpsResolvedPlace.valid) {
+        drawText(174, 174, fitGpsText(gpsResolvedPlace.city, 16), COL_GREEN);
+        drawText(174, 194, fitGpsText(String(gpsResolvedPlace.state) + " " + gpsResolvedPlace.country, 16), COL_CYAN);
+    } else {
+        drawText(174, 174, "Lugar offline", COL_MUTED);
+        drawText(174, 194, "No resuelto", COL_AMBER);
+    }
+
+    drawFooter("OK GUARDAR SOS  BACK SALIR");
+}
+
+void runGpsSosApp() {
+    currentScreen = Screen::GpsSos;
+    prepareGpsMode();
+    uint32_t lastDraw = 0;
+    drawGpsSos();
+    pushFrame();
+
+    while (true) {
+        serviceGps(30);
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+        if (action == AppAction::Select) {
+            saveGpsSosSnapshot();
+            toneClick(3800, 35);
+            drawGpsSos();
+            pushFrame();
+        }
+        if (millis() - lastDraw > 240) {
+            lastDraw = millis();
+            drawGpsSos();
+            pushFrame();
+        }
+        delay(2);
+    }
+}
+
 String sdTypeText() {
     if (!beginSdCard()) return "NO CARD";
     switch (SD.cardType()) {
@@ -1430,6 +1584,16 @@ void drawWifiDirectionPrompt(const char* sector) {
     drawText(34, 160, fitGpsText(wifiSsidText(wifiTargetSsid, wifiTargetSsid[0] == '\0'), 28), COL_MUTED);
     drawFooter("OK MEDIR  BACK RADAR");
     pushFrame();
+}
+
+bool ensureBleStackReady(const char* line = "Preparando escaner Bluetooth...") {
+    if (bleStackReady) return true;
+    releaseFrameForBleStartup();
+    drawDirectStatus("INICIANDO BLE", line, COL_AMBER);
+    releaseClassicBtMemoryOnce();
+    BLEDevice::init("CYBERDECK-REMOTE");
+    bleStackReady = true;
+    return recreateFrameAfterBleStartup();
 }
 
 void drawWifiDirectionMeasure(const char* sector, uint8_t sample, uint8_t total) {
@@ -1893,6 +2057,349 @@ void runWifiLocatorApp() {
         if (wifiListSelected < wifiListScroll) wifiListScroll = wifiListSelected;
         if (wifiListSelected >= wifiListScroll + 6) wifiListScroll = wifiListSelected - 5;
         drawWifiList();
+        delay(4);
+    }
+}
+
+uint8_t bleRssiPct(int32_t rssi) {
+    if (rssi <= -100) return 0;
+    if (rssi >= -35) return 100;
+    return (uint8_t)map(rssi, -100, -35, 0, 100);
+}
+
+uint16_t bleEstimateMeters(int32_t rssi) {
+    if (rssi < -120) return 0;
+    const float rssiAtOneMeter = -59.0f;
+    const float pathLoss = 2.3f;
+    float meters = powf(10.0f, (rssiAtOneMeter - (float)rssi) / (10.0f * pathLoss));
+    if (meters < 1.0f) meters = 1.0f;
+    if (meters > 99.0f) meters = 99.0f;
+    return (uint16_t)roundf(meters);
+}
+
+String bleMetersText() {
+    if (!bleTargetSeen) return "-- m";
+    return String(bleEstimateMeters(bleTargetRssi)) + " m";
+}
+
+String bleTrendText() {
+    if (!bleTargetSeen) return "BUSCANDO";
+    if (bleTrendDb >= 4) return "ACERCANDOTE";
+    if (bleTrendDb <= -4) return "ALEJANDOTE";
+    return "ESTABLE";
+}
+
+uint16_t bleTrendColor() {
+    if (!bleTargetSeen) return COL_RED;
+    if (bleTrendDb >= 4) return COL_GREEN;
+    if (bleTrendDb <= -4) return COL_AMBER;
+    return COL_CYAN;
+}
+
+String bleNameText(const char* name) {
+    if (name[0] == '\0') return "<sin nombre>";
+    return String(name);
+}
+
+void bleRememberSample(int32_t rssi) {
+    bleHistory[bleHistoryHead] = (int16_t)rssi;
+    bleHistoryHead = (bleHistoryHead + 1) % BLE_HISTORY_LEN;
+}
+
+void bleResetTargetHistory() {
+    bleTargetSeen = false;
+    bleTargetRssi = -127;
+    bleLastTargetRssi = -127;
+    bleBestRssi = -127;
+    bleTrendDb = 0;
+    bleHistoryHead = 0;
+    bleScanPass = 0;
+    memset(bleHistory, 0, sizeof(bleHistory));
+}
+
+bool blePrepareScan() {
+    quietRadiosForGps();
+    wifiCancelAsyncTargetScan();
+    WiFi.scanDelete();
+    WiFi.mode(WIFI_OFF);
+    if (!ensureBleStackReady("Preparando radar Bluetooth...")) return false;
+    BLEDevice::stopAdvertising();
+    bleScan = BLEDevice::getScan();
+    if (!bleScan) return false;
+    bleScan->setActiveScan(true);
+    bleScan->setInterval(96);
+    bleScan->setWindow(64);
+    return true;
+}
+
+void drawBleScanning(const char* line) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("BLE DEVICE RADAR", "scan");
+    frame.drawRoundRect(18, 50, 284, 116, 5, COL_CYAN);
+    drawText(34, 72, line, COL_CYAN);
+    drawText(34, 98, "Escucha anuncios BLE cercanos.", COL_MUTED);
+    drawText(34, 124, "No conecta, no empareja, no ataca.", COL_AMBER);
+    drawFooter("BACK SALIR");
+    pushFrame();
+}
+
+void bleSortDevices() {
+    for (uint8_t i = 0; i < bleDeviceCount; i++) {
+        for (uint8_t j = i + 1; j < bleDeviceCount; j++) {
+            if (bleDevices[j].rssi > bleDevices[i].rssi) {
+                BleDeviceInfo tmp = bleDevices[i];
+                bleDevices[i] = bleDevices[j];
+                bleDevices[j] = tmp;
+            }
+        }
+    }
+}
+
+void bleScanDevices() {
+    bleDeviceCount = 0;
+    if (!blePrepareScan()) {
+        setStatus("BLE init failed");
+        return;
+    }
+
+    drawBleScanning("Escaneando dispositivos BLE...");
+    BLEScanResults results = bleScan->start(3, false);
+    const int count = results.getCount();
+    bleDeviceCount = min<uint8_t>((uint8_t)count, BLE_MAX_DEVICES);
+    for (uint8_t i = 0; i < bleDeviceCount; i++) {
+        BLEAdvertisedDevice d = results.getDevice(i);
+        String name = d.haveName() ? String(d.getName().c_str()) : "";
+        String address = String(d.getAddress().toString().c_str());
+        name.toCharArray(bleDevices[i].name, sizeof(bleDevices[i].name));
+        address.toCharArray(bleDevices[i].address, sizeof(bleDevices[i].address));
+        bleDevices[i].rssi = d.getRSSI();
+        bleDevices[i].bestRssi = d.getRSSI();
+        bleDevices[i].hasName = d.haveName();
+        bleDevices[i].hasTxPower = d.haveTXPower();
+        bleDevices[i].txPower = d.haveTXPower() ? d.getTXPower() : 0;
+        bleDevices[i].serviceCount = d.getServiceUUIDCount();
+    }
+    bleScan->clearResults();
+    bleSortDevices();
+    bleListSelected = 0;
+    bleListScroll = 0;
+    setStatus(bleDeviceCount ? "BLE scan ready" : "No BLE devices");
+}
+
+void drawBleList() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("BLE DEVICE RADAR", bleDeviceCount ? "elige device" : "sin devices");
+    drawText(12, 35, String("Dispositivos: ") + bleDeviceCount + "  OK radar  UP/DOWN mover", COL_CYAN);
+
+    const int listY = 56;
+    const int rowH = 25;
+    const uint8_t visible = 6;
+    for (uint8_t row = 0; row < visible; row++) {
+        const uint8_t idx = bleListScroll + row;
+        if (idx >= bleDeviceCount) break;
+        const int y = listY + row * rowH;
+        const bool selected = idx == bleListSelected;
+        const uint16_t bg = selected ? COL_CYAN : COL_PANEL;
+        const uint16_t fg = selected ? COL_BG : COL_TEXT;
+        frame.fillRoundRect(10, y, 300, 21, 4, bg);
+        frame.drawRoundRect(10, y, 300, 21, 4, selected ? COL_TEXT : COL_GRID);
+        drawTextOn(16, y + 2, fitGpsText(bleNameText(bleDevices[idx].name), 18), fg, bg, 1);
+        frame.setTextDatum(TR_DATUM);
+        frame.setTextColor(selected ? COL_BG : (bleDevices[idx].rssi > -65 ? COL_GREEN : COL_AMBER), bg);
+        frame.drawString(String(bleDevices[idx].rssi) + "dBm SVC" + bleDevices[idx].serviceCount, 303, y + 2, 2);
+        frame.setTextDatum(TL_DATUM);
+    }
+
+    if (!bleDeviceCount) {
+        drawText(28, 92, "No se detectaron anuncios BLE.", COL_AMBER);
+        drawText(28, 116, "OK vuelve a escanear.", COL_CYAN);
+    } else {
+        const BleDeviceInfo& device = bleDevices[bleListSelected];
+        drawText(14, 210, fitGpsText(String(device.address) + (device.hasTxPower ? String("  TX ") + device.txPower : ""), 38), COL_MUTED);
+    }
+    drawFooter("OK RADAR  UP/DOWN MOVER  BACK SALIR");
+    pushFrame();
+}
+
+bool bleScanTargetOnce(int32_t& rssiOut) {
+    if (!bleTargetValid || !blePrepareScan()) return false;
+    BLEScanResults results = bleScan->start(1, false);
+    bool found = false;
+    int32_t best = -127;
+    for (int i = 0; i < results.getCount(); i++) {
+        BLEAdvertisedDevice d = results.getDevice(i);
+        String address = String(d.getAddress().toString().c_str());
+        if (address.equalsIgnoreCase(bleTargetAddress)) {
+            best = d.getRSSI();
+            found = true;
+            break;
+        }
+    }
+    bleScan->clearResults();
+    rssiOut = best;
+    return found;
+}
+
+void bleUpdateTargetRssi(bool drawWait = false) {
+    if (drawWait) drawBleScanning("Rastreando dispositivo BLE...");
+    int32_t rssi = -127;
+    const bool found = bleScanTargetOnce(rssi);
+    bleScanPass++;
+    bleLastTargetRssi = bleTargetRssi;
+    bleTargetSeen = found;
+    if (found) {
+        bleTargetRssi = rssi;
+        if (bleBestRssi < -120 || rssi > bleBestRssi) bleBestRssi = rssi;
+        bleTrendDb = (bleLastTargetRssi < -120) ? 0 : (int16_t)(rssi - bleLastTargetRssi);
+        bleRememberSample(rssi);
+    } else {
+        bleTargetRssi = -127;
+        bleTrendDb = -8;
+        bleRememberSample(-100);
+    }
+}
+
+void drawBleHistory(int x, int y, int w, int h) {
+    frame.drawRect(x, y, w, h, COL_GRID);
+    for (uint8_t i = 0; i < BLE_HISTORY_LEN; i++) {
+        const uint8_t idx = (bleHistoryHead + i) % BLE_HISTORY_LEN;
+        if (bleHistory[idx] == 0) continue;
+        const uint8_t pct = bleRssiPct(bleHistory[idx]);
+        const int px = x + 2 + (i * (w - 4)) / BLE_HISTORY_LEN;
+        const int barH = max(1, (pct * (h - 4)) / 100);
+        const uint16_t color = pct > 70 ? COL_GREEN : (pct > 38 ? COL_AMBER : COL_RED);
+        frame.drawFastVLine(px, y + h - 2 - barH, barH, color);
+    }
+}
+
+void drawBleRadar() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("BLE RADAR", bleTargetSeen ? "rssi vivo" : "buscando");
+
+    const uint8_t pct = bleTargetSeen ? bleRssiPct(bleTargetRssi) : 0;
+    const int cx = 76;
+    const int cy = 112;
+    const int maxR = 62;
+    frame.fillCircle(cx, cy, maxR + 5, 0x0004);
+    frame.drawCircle(cx, cy, maxR, COL_CYAN);
+    frame.drawCircle(cx, cy, 44, COL_GRID);
+    frame.drawCircle(cx, cy, 26, COL_GRID);
+    frame.drawFastHLine(cx - maxR, cy, maxR * 2, COL_GRID);
+    frame.drawFastVLine(cx, cy - maxR, maxR * 2, COL_GRID);
+
+    const float sweep = ((millis() % 1900UL) / 1900.0f) * TWO_PI;
+    for (uint8_t t = 0; t < 5; t++) {
+        const float rad = sweep - (t * 0.15f);
+        frame.drawLine(cx, cy, cx + cosf(rad) * (maxR - 2), cy + sinf(rad) * (maxR - 2), t < 2 ? COL_GREEN : 0x03E0);
+    }
+
+    const int dotR = map(pct, 0, 100, maxR - 6, 8);
+    const float angle = (sweep * 0.55f) + ((bleScanPass * 31) * DEG_TO_RAD);
+    const int dx = cx + cosf(angle) * dotR;
+    const int dy = cy + sinf(angle) * dotR;
+    const uint16_t dotColor = bleTargetSeen ? (pct > 70 ? COL_GREEN : (pct > 38 ? COL_AMBER : COL_RED)) : COL_RED;
+    const int pulse = 10 + ((millis() / 120) % 7);
+    frame.drawCircle(dx, dy, pulse, dotColor);
+    frame.drawCircle(dx, dy, pulse + 5, COL_GRID);
+    frame.fillCircle(dx, dy, 6, dotColor);
+    frame.fillCircle(cx, cy, 4, COL_CYAN);
+
+    frame.drawRoundRect(154, 38, 154, 84, 5, COL_GRID);
+    drawText(164, 50, fitGpsText(bleNameText(bleTargetName), 18), COL_GREEN);
+    drawText(164, 68, String(bleTargetRssi) + " dBm  " + String(pct) + "%", bleTargetSeen ? COL_CYAN : COL_RED);
+    drawText(164, 86, String("Peak ") + bleBestRssi + " dBm", bleBestRssi > -127 ? COL_GREEN : COL_MUTED);
+    drawText(164, 104, String("Metros ~ ") + bleMetersText(), COL_AMBER);
+
+    frame.drawRoundRect(154, 130, 154, 68, 5, COL_GRID);
+    drawText(164, 142, bleTrendText(), bleTrendColor());
+    drawText(164, 160, String("Scan ") + bleScanPass + "  BLE adv", COL_MUTED);
+    drawBar(164, 180, 132, 6, pct, dotColor);
+
+    drawBleHistory(18, 188, 124, 22);
+    drawFooter("OK RESCAN  BACK LISTA  HOLD HOME");
+    pushFrame();
+}
+
+void runBleTargetRadar() {
+    bleResetTargetHistory();
+    bleUpdateTargetRssi(true);
+    drawBleRadar();
+    uint32_t lastScan = millis();
+    uint32_t lastDraw = 0;
+
+    while (true) {
+        serviceGps(3);
+        const AppAction action = inputRead();
+        if (action == AppAction::LongSelect) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+        if (action == AppAction::Back) return;
+        if (action == AppAction::Select || action == AppAction::Up || action == AppAction::Down) {
+            bleUpdateTargetRssi(true);
+            drawBleRadar();
+            lastScan = millis();
+        }
+        if (millis() - lastScan > 1400) {
+            bleUpdateTargetRssi(false);
+            drawBleRadar();
+            lastScan = millis();
+        }
+        if (millis() - lastDraw > 80) {
+            drawBleRadar();
+            lastDraw = millis();
+        }
+        delay(4);
+    }
+}
+
+void runBleDeviceRadarApp() {
+    currentScreen = Screen::BleRadar;
+    bleScanDevices();
+    drawBleList();
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+        if (action == AppAction::Up && bleDeviceCount) {
+            bleListSelected = (bleListSelected == 0) ? bleDeviceCount - 1 : bleListSelected - 1;
+            toneClick();
+        } else if (action == AppAction::Down && bleDeviceCount) {
+            bleListSelected = (bleListSelected + 1) % bleDeviceCount;
+            toneClick();
+        } else if (action == AppAction::Select) {
+            if (!bleDeviceCount) {
+                bleScanDevices();
+                drawBleList();
+                continue;
+            }
+            const BleDeviceInfo& device = bleDevices[bleListSelected];
+            strlcpy(bleTargetName, device.name, sizeof(bleTargetName));
+            strlcpy(bleTargetAddress, device.address, sizeof(bleTargetAddress));
+            bleTargetValid = true;
+            toneClick(3200, 15);
+            runBleTargetRadar();
+            currentScreen = Screen::BleRadar;
+        } else {
+            delay(4);
+            continue;
+        }
+
+        if (bleListSelected < bleListScroll) bleListScroll = bleListSelected;
+        if (bleListSelected >= bleListScroll + 6) bleListScroll = bleListSelected - 5;
+        drawBleList();
         delay(4);
     }
 }
@@ -2512,15 +3019,21 @@ bool bleAsciiToKey(char c, uint8_t& usage, uint8_t& modifier) {
 }
 
 void beginBleRemote() {
-    if (bleRemoteReady) return;
+    if (bleRemoteReady) {
+        if (!bleRemoteConnected) BLEDevice::startAdvertising();
+        return;
+    }
 
     releaseFrameForBleStartup();
     drawDirectStatus("INICIANDO BLE", "Preparando memoria Bluetooth...", COL_AMBER);
-    esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+    releaseClassicBtMemoryOnce();
     delay(80);
 
     drawDirectStatus("INICIANDO BLE", "Creando dispositivo BLE...", COL_AMBER);
-    BLEDevice::init("CYBERDECK-REMOTE");
+    if (!bleStackReady) {
+        BLEDevice::init("CYBERDECK-REMOTE");
+        bleStackReady = true;
+    }
     BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
     bleRemoteServer = BLEDevice::createServer();
     bleRemoteServer->setCallbacks(&bleRemoteCallbacks);
@@ -3248,6 +3761,133 @@ void runHidPadApp() {
     pushFrame();
 }
 
+enum DemoLauncherAction : uint8_t {
+    DEMO_ACT_BACK = 0,
+    DEMO_ACT_WIFI,
+    DEMO_ACT_BLE,
+    DEMO_ACT_GPS_SOS,
+    DEMO_ACT_PASSCODE,
+    DEMO_ACT_HID,
+    DEMO_ACT_IPHONE,
+    DEMO_ACT_RADIO
+};
+
+const HidPadEntry DEMO_LAUNCHER_MENU[] = {
+    {"WIFI LOCATOR", "Radar RSSI + metros + DIR", DEMO_ACT_WIFI},
+    {"BLE RADAR", "Dispositivos Bluetooth cerca", DEMO_ACT_BLE},
+    {"GPS SOS", "Coordenadas grandes", DEMO_ACT_GPS_SOS},
+    {"PASSCODE SIM", "Animacion 9764", DEMO_ACT_PASSCODE},
+    {"HID PAD", "PC control seguro", DEMO_ACT_HID},
+    {"IPHONE REMOTE", "BLE iPhone control", DEMO_ACT_IPHONE},
+    {"RADIO SCOPE", "nRF24 2.4 GHz visual", DEMO_ACT_RADIO},
+    {"VOLVER", "Regresar al launcher", DEMO_ACT_BACK},
+};
+
+void drawDemoLauncherMenu(uint8_t selected, uint8_t scroll) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("CYBER DEMO", "reels");
+    drawText(10, 36, "Elige demo, OK da cuenta regresiva.", COL_CYAN);
+
+    const int listY = 58;
+    const int rowH = 25;
+    const uint8_t visible = 6;
+    const uint8_t count = sizeof(DEMO_LAUNCHER_MENU) / sizeof(DEMO_LAUNCHER_MENU[0]);
+    for (uint8_t row = 0; row < visible; row++) {
+        const uint8_t idx = scroll + row;
+        if (idx >= count) break;
+        const int y = listY + row * rowH;
+        const bool isSelected = idx == selected;
+        const uint16_t bg = isSelected ? COL_AMBER : COL_PANEL;
+        const uint16_t fg = isSelected ? COL_BG : COL_TEXT;
+        frame.fillRoundRect(10, y, 300, 21, 4, bg);
+        frame.drawRoundRect(10, y, 300, 21, 4, isSelected ? COL_TEXT : COL_GRID);
+        drawTextOn(18, y + 2, DEMO_LAUNCHER_MENU[idx].title, fg, bg, 1);
+        frame.setTextDatum(TR_DATUM);
+        frame.setTextColor(isSelected ? COL_BG : COL_MUTED, bg);
+        frame.drawString(DEMO_LAUNCHER_MENU[idx].subtitle, 303, y + 2, 2);
+        frame.setTextDatum(TL_DATUM);
+    }
+
+    drawText(12, 210, "instagram.com/pepeangelll", COL_GREEN);
+    drawFooter("UP/DOWN  OK LANZAR  BACK VOLVER");
+    pushFrame();
+}
+
+void drawDemoCountdown(const char* title) {
+    for (int i = 3; i > 0; i--) {
+        frame.fillSprite(COL_BG);
+        drawGrid();
+        drawHeader("CYBER DEMO", "standby");
+        frame.drawRoundRect(18, 42, 284, 142, 5, COL_AMBER);
+        frame.setTextDatum(MC_DATUM);
+        frame.setTextSize(1);
+        frame.setTextColor(COL_CYAN, COL_BG);
+        frame.drawString(title, SCREEN_W / 2, 70, 2);
+        frame.setTextSize(5);
+        frame.setTextColor(COL_GREEN, COL_BG);
+        frame.drawString(String(i), SCREEN_W / 2, 124, 2);
+        frame.setTextSize(1);
+        frame.setTextColor(COL_MUTED, COL_BG);
+        frame.drawString("prepara camara / encuadre", SCREEN_W / 2, 178, 2);
+        frame.setTextDatum(TL_DATUM);
+        drawFooter("BACK CANCELA DESPUES DE ENTRAR");
+        pushFrame();
+        toneClick(1700 + i * 350, 28);
+        delay(760);
+    }
+}
+
+void runCyberDemoLauncherApp() {
+    currentScreen = Screen::DemoLauncher;
+    static uint8_t selected = 0;
+    uint8_t scroll = selected >= 6 ? selected - 5 : 0;
+    const uint8_t count = sizeof(DEMO_LAUNCHER_MENU) / sizeof(DEMO_LAUNCHER_MENU[0]);
+    drawDemoLauncherMenu(selected, scroll);
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) break;
+
+        if (action == AppAction::Up) {
+            selected = (selected == 0) ? count - 1 : selected - 1;
+            toneClick();
+        } else if (action == AppAction::Down) {
+            selected = (selected + 1) % count;
+            toneClick();
+        } else if (action == AppAction::Select) {
+            const HidPadEntry& entry = DEMO_LAUNCHER_MENU[selected];
+            if (entry.action == DEMO_ACT_BACK) break;
+            toneClick(3200, 16);
+            drawDemoCountdown(entry.title);
+            switch (entry.action) {
+                case DEMO_ACT_WIFI: runWifiLocatorApp(); break;
+                case DEMO_ACT_BLE: runBleDeviceRadarApp(); break;
+                case DEMO_ACT_GPS_SOS: runGpsSosApp(); break;
+                case DEMO_ACT_PASSCODE: runPasscodeSimApp(); break;
+                case DEMO_ACT_HID: runHidPadApp(); break;
+                case DEMO_ACT_IPHONE: runIphoneRemoteApp(); break;
+                case DEMO_ACT_RADIO: runRadioScopeApp(); break;
+                default: break;
+            }
+            currentScreen = Screen::DemoLauncher;
+        } else {
+            delay(4);
+            continue;
+        }
+
+        if (selected < scroll) scroll = selected;
+        if (selected >= scroll + 6) scroll = selected - 5;
+        drawDemoLauncherMenu(selected, scroll);
+        delay(4);
+    }
+
+    currentScreen = Screen::Home;
+    setStatus("Ready");
+    drawHome();
+    pushFrame();
+}
+
 void drawBattery() {
     frame.fillSprite(COL_BG);
     drawGrid();
@@ -3287,6 +3927,9 @@ void renderCurrent() {
         case Screen::SystemPulse: drawSystemPulse(); break;
         case Screen::GpsRadar: drawGpsRadar(); break;
         case Screen::WifiLocator: drawHome(); break;
+        case Screen::BleRadar: drawHome(); break;
+        case Screen::GpsSos: drawHome(); break;
+        case Screen::DemoLauncher: drawHome(); break;
         case Screen::SdVault: drawSdVault(); break;
         case Screen::RadioScope: drawRadioScope(); break;
         case Screen::PasscodeSim: drawHome(); break;
@@ -3325,6 +3968,18 @@ void handleAction(AppAction action) {
             } else if (MENU[menuIndex].screen == Screen::WifiLocator) {
                 toneClick(3200, 18);
                 runWifiLocatorApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::BleRadar) {
+                toneClick(3200, 18);
+                runBleDeviceRadarApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::GpsSos) {
+                toneClick(3200, 18);
+                runGpsSosApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::DemoLauncher) {
+                toneClick(3200, 18);
+                runCyberDemoLauncherApp();
                 return;
             } else if (MENU[menuIndex].screen == Screen::RadioScope) {
                 toneClick(3200, 18);
