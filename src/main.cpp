@@ -115,19 +115,19 @@ struct MenuEntry {
 };
 
 const MenuEntry MENU[] = {
-    {"SYSTEM PULSE", "Hardware live dashboard", Screen::SystemPulse},
+    {"SYSTEM PULSE", "Estado del hardware", Screen::SystemPulse},
     {"GPS RADAR", "Ubicacion real, altitud y lugar", Screen::GpsRadar},
     {"WIFI LOCATOR", "Lista redes y radar RSSI", Screen::WifiLocator},
     {"BLE DEVICE RADAR", "Radar de dispositivos Bluetooth", Screen::BleRadar},
     {"GPS SOS MODE", "Coordenadas grandes para emergencia", Screen::GpsSos},
     {"CYBER DEMO", "Launcher rapido para reels", Screen::DemoLauncher},
-    {"SD VAULT", "microSD status and test write", Screen::SdVault},
-    {"RADIO SCOPE", "Passive nRF24 2.4 GHz scan", Screen::RadioScope},
-    {"PASSCODE SIM", "15 sec cinematic PIN demo", Screen::PasscodeSim},
+    {"SD VAULT", "microSD y prueba de escritura", Screen::SdVault},
+    {"RADIO SCOPE", "Escaneo pasivo 2.4 GHz", Screen::RadioScope},
+    {"PASSCODE SIM", "Demo visual de PIN", Screen::PasscodeSim},
     {"HID PAD", "Apps, terminal y multimedia", Screen::HidDemo},
     {"IPHONE REMOTE", "BLE app launcher y multimedia", Screen::IphoneRemote},
-    {"BATTERY METER", "Li-ion 1S voltage monitor", Screen::Battery},
-    {"ABOUT TEMPLATE", "Pins, controls and next apps", Screen::About},
+    {"BATTERY METER", "Voltaje y porcentaje Li-ion", Screen::Battery},
+    {"ABOUT TEMPLATE", "Pines, controles y version", Screen::About},
 };
 
 struct GpsPlace {
@@ -474,6 +474,12 @@ void drawBar(int x, int y, int w, int h, int pct, uint16_t color) {
     frame.fillRect(x + 2, y + 2, ((w - 4) * pct) / 100, h - 4, color);
 }
 
+String fitText(const String& text, uint8_t maxChars) {
+    if (text.length() <= maxChars) return text;
+    if (maxChars <= 1) return "~";
+    return text.substring(0, maxChars - 1) + "~";
+}
+
 void drawBoot() {
     frame.fillSprite(COL_BG);
     drawGrid();
@@ -714,11 +720,11 @@ void drawHome() {
 
     frame.setTextSize(1);
     frame.setTextColor(COL_CYAN, COL_BG);
-    frame.drawString("Individual app workspace for quick video-ready builds", 10, 36, 2);
+    frame.drawString("Selecciona una herramienta para probar o grabar", 10, 34, 2);
 
-    const int listY = 54;
-    const int rowH = 25;
-    const uint8_t visible = 5;
+    const int listY = 48;
+    const int rowH = 33;
+    const uint8_t visible = 4;
     if (menuIndex < menuScroll) menuScroll = menuIndex;
     if (menuIndex >= menuScroll + visible) menuScroll = menuIndex - visible + 1;
 
@@ -726,26 +732,29 @@ void drawHome() {
         const uint8_t idx = menuScroll + row;
         const int y = listY + row * rowH;
         if (idx >= MENU_COUNT) {
-            frame.drawRect(10, y, 300, 22, 0x0821);
+            frame.drawRect(10, y, 300, 30, 0x0821);
             continue;
         }
 
         const bool selected = idx == menuIndex;
         const uint16_t bg = selected ? COL_GREEN : COL_PANEL;
         const uint16_t fg = selected ? COL_BG : COL_TEXT;
-        frame.fillRoundRect(10, y, 300, 21, 4, bg);
-        frame.drawRoundRect(10, y, 300, 21, 4, selected ? COL_TEXT : COL_GRID);
-        drawTextOn(18, y + 2, MENU[idx].title, fg, bg, 1);
-        frame.setTextDatum(TR_DATUM);
-        frame.setTextColor(selected ? COL_BG : COL_MUTED, bg);
-        frame.drawString(MENU[idx].subtitle, 303, y + 2, 2);
-        frame.setTextDatum(TL_DATUM);
+        const uint16_t subColor = selected ? COL_BG : COL_MUTED;
+        frame.fillRoundRect(10, y, 300, 29, 5, bg);
+        frame.drawRoundRect(10, y, 300, 29, 5, selected ? COL_TEXT : COL_GRID);
+        frame.fillRoundRect(16, y + 8, 16, 14, 4, selected ? COL_BG : 0x0184);
+        drawTextOn(20, y + 9, String(idx + 1), selected ? COL_GREEN : COL_CYAN, selected ? COL_BG : 0x0184, 1);
+        drawTextOn(40, y + 3, fitText(MENU[idx].title, 21), fg, bg, 1);
+        drawTextOn(40, y + 17, fitText(MENU[idx].subtitle, 33), subColor, bg, 1);
+        if (selected) {
+            frame.fillTriangle(297, y + 14, 304, y + 9, 304, y + 19, COL_BG);
+        }
     }
 
     drawMiniBadge(12, 187, 70, "BAT", String(batteryPct) + "%", batteryPct < 20 ? COL_RED : COL_GREEN);
     drawMiniBadge(90, 187, 70, "SD", sdReady ? "OK" : "WAIT", sdReady ? COL_CYAN : COL_AMBER);
     drawMiniBadge(168, 187, 70, "GPS", String(gps.satellites.value()), gps.location.isValid() ? COL_GREEN : COL_AMBER);
-    drawMiniBadge(246, 187, 62, "UP", uptimeText(), COL_CYAN);
+    drawMiniBadge(246, 187, 62, "APP", String(menuIndex + 1) + "/" + MENU_COUNT, COL_CYAN);
     drawFooter("ENC/UP/DOWN MOVE  OK OPEN  OK HOLD BACK");
 }
 
@@ -794,9 +803,7 @@ void drawCompass(int cx, int cy, int r, float course, bool valid) {
 }
 
 String fitGpsText(const String& text, uint8_t maxChars) {
-    if (text.length() <= maxChars) return text;
-    if (maxChars <= 1) return "~";
-    return text.substring(0, maxChars - 1) + "~";
+    return fitText(text, maxChars);
 }
 
 String gpsCoordText(double value, const char* positive, const char* negative) {
