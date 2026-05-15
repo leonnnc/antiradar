@@ -545,6 +545,15 @@ bool writeTextFile(const char* path, const String& content) {
     return true;
 }
 
+bool appendTextFile(const char* path, const String& content) {
+    if (!beginSdCard()) return false;
+    File f = SD.open(path, FILE_APPEND);
+    if (!f) return false;
+    f.print(content);
+    f.close();
+    return true;
+}
+
 void countRootFiles(uint16_t& dirs, uint16_t& files) {
     dirs = 0;
     files = 0;
@@ -1195,28 +1204,57 @@ bool saveGpsSosSnapshot() {
 
     String out;
     out += "CYBERDECK GPS SOS SNAPSHOT\r\n";
+    out += "MENSAJE RAPIDO:\r\n";
+    if (gps.location.isValid()) {
+        out += "Necesito ayuda. Mi ubicacion GPS es " + String(gps.location.lat(), 6) + ", " + String(gps.location.lng(), 6) + ".\r\n";
+        out += "Mapa: https://maps.google.com/?q=" + String(gps.location.lat(), 6) + "," + String(gps.location.lng(), 6) + "\r\n";
+    } else {
+        out += "Sin fix GPS todavia. Usar datos de senal abajo para diagnostico.\r\n";
+    }
+    out += "\r\nDATOS TECNICOS:\r\n";
     out += "Fix: " + String(gps.location.isValid() ? "YES" : "NO") + "\r\n";
     out += "UTC: " + gpsTimeText() + "\r\n";
     out += "Battery: " + String(batteryVolts, 2) + "V (" + String(batteryPct) + "%)\r\n";
     out += "Satellites: " + String(gps.satellites.value()) + "\r\n";
     out += "HDOP: " + gpsHdopText() + "\r\n";
+    out += "RX chars/s: " + String(gpsCharsPerSec) + "\r\n";
+    out += "NMEA chars: " + String(gps.charsProcessed()) + "\r\n";
     if (gps.location.isValid()) {
         out += "LAT: " + String(gps.location.lat(), 6) + "\r\n";
         out += "LON: " + String(gps.location.lng(), 6) + "\r\n";
         out += "LAT DMS: " + gpsDmsText(gps.location.lat(), "N", "S") + "\r\n";
         out += "LON DMS: " + gpsDmsText(gps.location.lng(), "E", "W") + "\r\n";
         out += "ALT: " + gpsAltText() + "\r\n";
+        out += "Speed: " + gpsSpeedText() + "\r\n";
+        out += "Course: " + gpsCourseText() + "\r\n";
         out += "MAPS: https://maps.google.com/?q=" + String(gps.location.lat(), 6) + "," + String(gps.location.lng(), 6) + "\r\n";
     }
     if (gpsResolvedPlace.valid) {
         out += "Nearest: " + String(gpsResolvedPlace.city) + ", " + gpsResolvedPlace.state + ", " + gpsResolvedPlace.country + "\r\n";
+        out += "Municipality: " + String(gpsResolvedPlace.municipality) + "\r\n";
         out += "Distance: " + gpsKmText(gpsResolvedPlace.km) + "\r\n";
+        out += "Place source: " + gpsPlaceSourceText() + "\r\n";
+        out += "Rows scanned: " + String(gpsResolvedPlace.rowsScanned) + "\r\n";
     }
+    out += "\r\n";
 
     const bool ok1 = writeTextFile("/APPS/SOS_LAST.txt", out);
     const bool ok2 = writeTextFile("/APPS/GPS/SOS_LAST.txt", out);
-    setStatus((ok1 || ok2) ? "SOS snapshot saved" : "SOS save failed");
-    return ok1 || ok2;
+    const bool ok3 = appendTextFile("/APPS/GPS/SOS_LOG.txt", String("---- SOS SNAPSHOT ----\r\n") + out);
+    setStatus((ok1 || ok2 || ok3) ? "SOS snapshot saved" : "SOS save failed");
+    return ok1 || ok2 || ok3;
+}
+
+String gpsSosStatusText(bool hasFix, bool nmeaLive) {
+    if (hasFix) return "FIX OK";
+    if (nmeaLive) return "BUSCANDO";
+    return "SIN RX";
+}
+
+uint16_t gpsSosStatusColor(bool hasFix, bool nmeaLive) {
+    if (hasFix) return COL_GREEN;
+    if (nmeaLive) return COL_AMBER;
+    return COL_RED;
 }
 
 void drawGpsSos() {
@@ -1225,42 +1263,54 @@ void drawGpsSos() {
     const bool nmeaLive = gps.charsProcessed() > 0 && (millis() - gpsLastCharMs) < 2500;
     const bool hasFix = gps.location.isValid();
     updateGpsResolvedPlace(false);
-    drawHeader("GPS SOS MODE", hasFix ? "fix listo" : (nmeaLive ? "buscando" : "sin rx"));
+    const uint16_t statusColor = gpsSosStatusColor(hasFix, nmeaLive);
+    drawHeader("GPS SOS MODE", gpsSosStatusText(hasFix, nmeaLive).c_str());
 
-    frame.drawRoundRect(8, 36, 304, 118, 5, hasFix ? COL_GREEN : COL_AMBER);
-    frame.fillRect(14, 42, 292, 106, 0x0004);
+    frame.drawRoundRect(8, 34, 304, 26, 5, statusColor);
+    frame.fillRect(12, 38, 296, 18, 0x0004);
+    drawTextOn(18, 40, "SOS 112 / 911", statusColor, 0x0004);
+    frame.setTextDatum(TR_DATUM);
+    frame.setTextColor(statusColor, 0x0004);
+    frame.setTextSize(1);
+    frame.drawString(gpsSosStatusText(hasFix, nmeaLive), 302, 40, 2);
+    frame.setTextDatum(TL_DATUM);
+
+    frame.drawRoundRect(8, 66, 304, 82, 5, statusColor);
+    frame.fillRect(14, 72, 292, 70, 0x0004);
     frame.setTextDatum(TL_DATUM);
     frame.setTextSize(1);
     if (hasFix) {
         frame.setTextColor(COL_GREEN, 0x0004);
-        frame.drawString("LAT", 24, 52, 2);
+        frame.drawString("LAT", 22, 76, 2);
         frame.setTextColor(COL_TEXT, 0x0004);
-        frame.drawString(String(gps.location.lat(), 6), 72, 48, 4);
+        frame.drawString(String(gps.location.lat(), 6), 72, 72, 4);
         frame.setTextColor(COL_GREEN, 0x0004);
-        frame.drawString("LON", 24, 90, 2);
+        frame.drawString("LON", 22, 108, 2);
         frame.setTextColor(COL_TEXT, 0x0004);
-        frame.drawString(String(gps.location.lng(), 6), 72, 86, 4);
-        drawTextOn(24, 128, String("ALT ") + gpsAltText() + "  UTC " + gpsTimeText(), COL_CYAN, 0x0004);
+        frame.drawString(String(gps.location.lng(), 6), 72, 104, 4);
+        drawTextOn(22, 132, fitText(String("ALT ") + gpsAltText() + "  UTC " + gpsTimeText(), 37), COL_CYAN, 0x0004);
     } else {
-        drawTextOn(26, 62, nmeaLive ? "GPS conectado, esperando fix." : "Sin datos GPS en RX18.", hasFix ? COL_GREEN : COL_AMBER, 0x0004);
-        drawTextOn(26, 90, "Sal a cielo abierto y espera satelites.", COL_CYAN, 0x0004);
-        drawTextOn(26, 118, String("Chars ") + gps.charsProcessed() + "  RX " + gpsCharsPerSec + "/s", COL_MUTED, 0x0004);
+        drawTextOn(24, 82, nmeaLive ? "GPS conectado, esperando fix real." : "Sin datos GPS en RX18.", nmeaLive ? COL_AMBER : COL_RED, 0x0004);
+        drawTextOn(24, 106, "Sal a cielo abierto y deja antena visible.", COL_CYAN, 0x0004);
+        drawTextOn(24, 128, String("Chars ") + gps.charsProcessed() + "  RX " + gpsCharsPerSec + "/s", COL_MUTED, 0x0004);
     }
 
-    frame.drawRoundRect(8, 162, 148, 48, 5, COL_GRID);
-    drawText(18, 174, String("SAT ") + gps.satellites.value() + "  HDOP " + gpsHdopText(), hasFix ? COL_GREEN : COL_AMBER);
-    drawText(18, 194, String("BAT ") + batteryPct + "% " + String(batteryVolts, 2) + "V", batteryPct < 20 ? COL_RED : COL_CYAN);
+    frame.drawRoundRect(8, 156, 148, 56, 5, COL_GRID);
+    drawText(18, 166, "SENAL GPS", COL_MUTED);
+    drawText(18, 184, String("SAT ") + gps.satellites.value() + "  HDOP " + gpsHdopText(), hasFix ? COL_GREEN : COL_AMBER);
+    drawText(18, 198, String("BAT ") + batteryPct + "% " + String(batteryVolts, 2) + "V", batteryPct < 20 ? COL_RED : COL_CYAN);
 
-    frame.drawRoundRect(164, 162, 148, 48, 5, COL_GRID);
+    frame.drawRoundRect(164, 156, 148, 56, 5, COL_GRID);
+    drawText(174, 166, "LUGAR ESTIMADO", COL_MUTED);
     if (gpsResolvedPlace.valid) {
-        drawText(174, 174, fitGpsText(gpsResolvedPlace.city, 16), COL_GREEN);
-        drawText(174, 194, fitGpsText(String(gpsResolvedPlace.state) + " " + gpsResolvedPlace.country, 16), COL_CYAN);
+        drawText(174, 184, fitText(gpsResolvedPlace.city, 16), gpsResolvedPlace.close ? COL_GREEN : COL_AMBER);
+        drawText(174, 198, fitText(String(gpsResolvedPlace.state) + " " + gpsKmText(gpsResolvedPlace.km), 18), COL_CYAN);
     } else {
-        drawText(174, 174, "Lugar offline", COL_MUTED);
-        drawText(174, 194, "No resuelto", COL_AMBER);
+        drawText(174, 184, "Lugar offline", COL_MUTED);
+        drawText(174, 198, hasFix ? "No resuelto" : "Sin fix aun", COL_AMBER);
     }
 
-    drawFooter("OK GUARDAR SOS  BACK SALIR");
+    drawFooter("OK GUARDA SOS SD  BACK SALIR");
 }
 
 void runGpsSosApp() {

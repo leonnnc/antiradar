@@ -144,11 +144,12 @@ BLE DEVICE RADAR mide anuncios BLE visibles. Algunos telefonos y accesorios ocul
 
 Pantalla de emergencia pensada para hiking o situaciones donde necesitas dictar ubicacion rapido.
 
-- Muestra latitud y longitud en grande.
-- Muestra altitud, hora UTC, satelites, HDOP y bateria.
+- Muestra `SOS 112/911`, estado `FIX OK/BUSCANDO/SIN RX`, latitud y longitud en grande.
+- Muestra altitud, hora UTC, satelites, HDOP, bateria y velocidad RX NMEA.
 - Muestra lugar aproximado si la base offline esta disponible.
 - `OK` guarda snapshot SOS en `/APPS/SOS_LAST.txt` y `/APPS/GPS/SOS_LAST.txt`.
-- El snapshot incluye coordenadas, altitud, bateria, satelites, HDOP, lugar aproximado y enlace de Google Maps.
+- Tambien agrega historial en `/APPS/GPS/SOS_LOG.txt`.
+- El snapshot incluye mensaje rapido para compartir, coordenadas, DMS, altitud, bateria, satelites, HDOP, lugar aproximado y enlace de Google Maps.
 
 Para emergencia real, las coordenadas decimales `LAT` y `LON` son el dato principal.
 
