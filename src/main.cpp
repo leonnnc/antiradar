@@ -2725,9 +2725,11 @@ void runInstaMonitorApp() {
             if (action == AppAction::Up) {
                 igCursorUp();
                 toneClick();
+                drawInstaWifiPasswordKeyboard();
             } else if (action == AppAction::Down) {
                 igCursorDown();
                 toneClick();
+                drawInstaWifiPasswordKeyboard();
             } else if (action == AppAction::Back) {
                 const size_t len = strlen(igWifiPassword);
                 if (len > 0) {
