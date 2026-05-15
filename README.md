@@ -181,7 +181,8 @@ Monitor visual de estadisticas publicas/permitidas de Instagram mediante un endp
 - No requiere microSD para capturar el usuario ni mostrar la pantalla de resultados.
 - No guarda tokens ni credenciales de Meta dentro del firmware.
 - Espera un JSON simple con `username`, `followers` o `followers_count`, y `media` o `media_count`.
-- Si no hay endpoint configurado, muestra `API no configurada` en la pantalla de resultados.
+- Si no hay endpoint configurado, muestra un resultado visual `DEMO sin API` claramente marcado.
+- Para datos reales se debe configurar `IG_API_URL` hacia un backend propio/autorizado.
 
 Config opcional por build flags privados:
 

@@ -217,6 +217,7 @@ struct IgMonitorResult {
     uint32_t media;
     int32_t delta;
     bool ok;
+    bool demo;
     char status[48];
 };
 
@@ -2381,15 +2382,39 @@ uint32_t igJsonNumber(JsonDocument& doc, const char* a, const char* b) {
     return 0;
 }
 
+uint32_t igUsernameHash(const char* username) {
+    uint32_t hash = 2166136261UL;
+    for (uint8_t i = 0; username[i] != '\0'; i++) {
+        hash ^= (uint8_t)tolower((unsigned char)username[i]);
+        hash *= 16777619UL;
+    }
+    return hash;
+}
+
+bool igBuildDemoStats() {
+    memset(&igResult, 0, sizeof(igResult));
+    igSafeUsername(igUsername).toCharArray(igResult.username, sizeof(igResult.username));
+    const uint32_t hash = igUsernameHash(igResult.username);
+    igResult.followers = 1200 + (hash % 98500);
+    igResult.media = 24 + ((hash >> 8) % 420);
+    igResult.delta = (int32_t)((hash >> 16) % 181) - 60;
+    igResult.ok = true;
+    igResult.demo = true;
+    igHasResult = true;
+    strlcpy(igResult.status, "DEMO sin API", sizeof(igResult.status));
+    setStatus("IG demo result");
+    return true;
+}
+
 bool igFetchStats() {
     memset(&igResult, 0, sizeof(igResult));
     igSafeUsername(igUsername).toCharArray(igResult.username, sizeof(igResult.username));
     igHasResult = false;
 
     if (!igLoadConfig()) {
-        strlcpy(igResult.status, "API no configurada", sizeof(igResult.status));
-        setStatus("IG API not configured");
-        return false;
+        drawIgStatus("API pendiente. Modo demo...", COL_AMBER);
+        delay(650);
+        return igBuildDemoStats();
     }
 
     if (!igConnectWifi()) {
@@ -2584,7 +2609,7 @@ void igApplySelectedWifi(bool clearPassword) {
 void drawInstaResults() {
     frame.fillSprite(COL_BG);
     drawGrid();
-    drawHeader("INSTA RESULT", igResult.ok ? "api ok" : "pendiente");
+    drawHeader("INSTA RESULT", igResult.demo ? "demo" : (igResult.ok ? "api ok" : "pendiente"));
 
     frame.drawRoundRect(10, 38, 300, 54, 5, igResult.ok ? COL_GREEN : COL_AMBER);
     frame.fillRect(16, 44, 288, 42, 0x0004);
@@ -2597,7 +2622,7 @@ void drawInstaResults() {
         drawText(24, 138, String("Media: ") + igResult.media, COL_CYAN);
         drawText(24, 160, String("Delta: ") + (igResult.delta >= 0 ? "+" : "") + igResult.delta,
                  igResult.delta >= 0 ? COL_GREEN : COL_RED);
-        drawText(24, 178, "Fuente: endpoint configurado", COL_MUTED);
+        drawText(24, 178, igResult.demo ? "Fuente: demo local sin API" : "Fuente: endpoint configurado", COL_MUTED);
     } else {
         drawText(24, 116, "Resultados no disponibles aun.", COL_AMBER);
         drawText(24, 138, "Configura backend con build flags:", COL_CYAN);
@@ -2605,7 +2630,7 @@ void drawInstaResults() {
         drawText(24, 176, fitText(igResult.status[0] ? igResult.status : "API pendiente", 34), COL_MUTED);
     }
 
-    drawFooter("OK REINTENTAR  BACK TECLADO  HOLD HOME");
+    drawFooter(igResult.demo ? "DEMO LOCAL  BACK TECLADO  HOLD HOME" : "OK REINTENTAR  BACK TECLADO");
     pushFrame();
 }
 
