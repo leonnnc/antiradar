@@ -2088,6 +2088,20 @@ String bleMetersText() {
     return String(bleEstimateMeters(bleTargetRssi)) + " m";
 }
 
+String bleProximityText(uint8_t pct) {
+    if (!bleTargetSeen) return "BUSCANDO";
+    if (pct >= 70) return "CERCA";
+    if (pct >= 38) return "MEDIA";
+    return "LEJOS";
+}
+
+uint16_t bleProximityColor(uint8_t pct) {
+    if (!bleTargetSeen) return COL_RED;
+    if (pct >= 70) return COL_GREEN;
+    if (pct >= 38) return COL_AMBER;
+    return COL_RED;
+}
+
 String bleTrendText() {
     if (!bleTargetSeen) return "BUSCANDO";
     if (bleTrendDb >= 4) return "ACERCANDOTE";
@@ -2404,8 +2418,10 @@ void drawBleRadar() {
     frame.fillRoundRect(panelX, panelY, panelW, panelH, 6, 0x0004);
     frame.drawRoundRect(panelX, panelY, panelW, panelH, 6, COL_CYAN);
 
-    drawText(panelX + 10, panelY + 8, "CERCA", COL_GREEN);
-    drawText(panelX + 10, panelY + panelH - 22, "LEJOS", COL_RED);
+    frame.fillRoundRect(panelX + 9, panelY + 7, 68, 18, 4, COL_PANEL);
+    drawText(panelX + 14, panelY + 9, bleProximityText(pct), bleProximityColor(pct));
+    frame.fillTriangle(trackX - 5, trackTop - 8, trackX + 5, trackTop - 8, trackX, trackTop - 2, COL_GREEN);
+    frame.fillTriangle(trackX - 5, trackBottom + 8, trackX + 5, trackBottom + 8, trackX, trackBottom + 2, COL_RED);
     frame.drawFastVLine(trackX, trackTop, trackH, COL_GRID);
     for (uint8_t i = 0; i < 5; i++) {
         const int y = trackTop + (i * trackH) / 4;

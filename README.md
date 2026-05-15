@@ -129,7 +129,7 @@ Radar pasivo de anuncios Bluetooth Low Energy cercanos.
 - Muestra nombre cuando el dispositivo lo anuncia; si viene oculto, crea una etiqueta por fabricante, servicio BLE, apariencia o final de MAC.
 - Muestra direccion MAC BLE, RSSI, servicios anunciados y potencia TX cuando esta disponible.
 - Permite seleccionar un dispositivo por direccion.
-- Abre una vista `BLE PULSE` con medidor vertical `LEJOS/CERCA`, ondas de proximidad limpias, historial RSSI y distancia aproximada.
+- Abre una vista `BLE PULSE` con estado dinamico `CERCA/MEDIA/LEJOS`, medidor vertical, ondas de proximidad limpias, historial RSSI y distancia aproximada.
 - Muestra tendencia `ACERCANDOTE`, `ALEJANDOTE`, `ESTABLE` o `BUSCANDO`.
 - No se conecta al dispositivo.
 - No empareja.
