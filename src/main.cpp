@@ -87,6 +87,8 @@ constexpr uint32_t GPS_PLACE_RESCAN_MS = 15000;
 constexpr float GPS_PLACE_RESCAN_KM = 1.0f;
 constexpr uint32_t GPS_PLACE_MAX_ROWS = 65000;
 constexpr uint8_t WIFI_MAX_APS = 24;
+constexpr uint8_t WIFI_CHANNEL_COUNT = 14;
+constexpr uint8_t WIFI_CHANNEL_SCAN_MAX_APS = 64;
 constexpr uint8_t WIFI_HISTORY_LEN = 44;
 constexpr uint8_t BLE_MAX_DEVICES = 24;
 constexpr uint8_t BLE_HISTORY_LEN = 36;
@@ -96,6 +98,7 @@ enum class Screen : uint8_t {
     SystemPulse,
     GpsRadar,
     WifiLocator,
+    WifiChannels,
     BleRadar,
     GpsSos,
     DemoLauncher,
@@ -118,6 +121,7 @@ const MenuEntry MENU[] = {
     {"SYSTEM PULSE", "Estado del hardware", Screen::SystemPulse},
     {"GPS RADAR", "Ubicacion real, altitud y lugar", Screen::GpsRadar},
     {"WIFI LOCATOR", "Lista redes y radar RSSI", Screen::WifiLocator},
+    {"WIFI CHANNELS", "Redes por canal 1-14", Screen::WifiChannels},
     {"BLE DEVICE RADAR", "Radar de dispositivos Bluetooth", Screen::BleRadar},
     {"GPS SOS MODE", "Coordenadas grandes para emergencia", Screen::GpsSos},
     {"CYBER DEMO", "Launcher rapido para reels", Screen::DemoLauncher},
@@ -212,6 +216,15 @@ WifiApInfo wifiAps[WIFI_MAX_APS] = {};
 uint8_t wifiApCount = 0;
 uint8_t wifiListSelected = 0;
 uint8_t wifiListScroll = 0;
+WifiApInfo wifiChannelAps[WIFI_CHANNEL_SCAN_MAX_APS] = {};
+uint8_t wifiChannelApCount = 0;
+uint16_t wifiChannelCounts[WIFI_CHANNEL_COUNT + 1] = {};
+int32_t wifiChannelBestRssi[WIFI_CHANNEL_COUNT + 1] = {};
+uint8_t wifiChannelSelected = 1;
+uint8_t wifiChannelSummaryScroll = 0;
+uint8_t wifiChannelListSelected = 0;
+uint8_t wifiChannelListScroll = 0;
+uint16_t wifiChannelTotalAps = 0;
 bool wifiTargetValid = false;
 bool wifiTargetSeen = false;
 char wifiTargetSsid[33] = "";
@@ -1727,6 +1740,283 @@ void drawWifiList() {
     }
     drawFooter("OK RADAR  UP/DOWN MOVER  BACK SALIR");
     pushFrame();
+}
+
+uint16_t wifiChannelMaxCount() {
+    uint16_t maxCount = 1;
+    for (uint8_t ch = 1; ch <= WIFI_CHANNEL_COUNT; ch++) {
+        if (wifiChannelCounts[ch] > maxCount) maxCount = wifiChannelCounts[ch];
+    }
+    return maxCount;
+}
+
+uint8_t wifiChannelStoredCount(uint8_t channel) {
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < wifiChannelApCount; i++) {
+        if (wifiChannelAps[i].channel == channel) count++;
+    }
+    return count;
+}
+
+int16_t wifiChannelApIndexAt(uint8_t channel, uint8_t ordinal) {
+    uint8_t seen = 0;
+    for (uint8_t i = 0; i < wifiChannelApCount; i++) {
+        if (wifiChannelAps[i].channel != channel) continue;
+        if (seen == ordinal) return i;
+        seen++;
+    }
+    return -1;
+}
+
+void wifiChannelSortAps() {
+    for (uint8_t i = 0; i < wifiChannelApCount; i++) {
+        for (uint8_t j = i + 1; j < wifiChannelApCount; j++) {
+            const bool channelBefore = wifiChannelAps[j].channel < wifiChannelAps[i].channel;
+            const bool strongerSameChannel = wifiChannelAps[j].channel == wifiChannelAps[i].channel &&
+                                             wifiChannelAps[j].rssi > wifiChannelAps[i].rssi;
+            if (channelBefore || strongerSameChannel) {
+                WifiApInfo tmp = wifiChannelAps[i];
+                wifiChannelAps[i] = wifiChannelAps[j];
+                wifiChannelAps[j] = tmp;
+            }
+        }
+    }
+}
+
+void drawWifiChannelScanning(const char* line) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("WIFI CHANNELS", "scan");
+    frame.drawRoundRect(18, 50, 284, 116, 5, COL_CYAN);
+    drawText(34, 72, line, COL_CYAN);
+    drawText(34, 98, "Cuenta redes por canal 1-14.", COL_MUTED);
+    drawText(34, 124, "Escaneo pasivo, sin conectar.", COL_AMBER);
+    drawFooter("BACK SALIR");
+    pushFrame();
+}
+
+void wifiChannelScanAll() {
+    wifiPrepareMode();
+    drawWifiChannelScanning("Analizando canales WiFi...");
+    memset(wifiChannelCounts, 0, sizeof(wifiChannelCounts));
+    for (uint8_t ch = 0; ch <= WIFI_CHANNEL_COUNT; ch++) {
+        wifiChannelBestRssi[ch] = -127;
+    }
+    wifiChannelApCount = 0;
+    wifiChannelTotalAps = 0;
+
+    int n = WiFi.scanNetworks(false, true, false, 170);
+    if (n < 0) n = 0;
+    wifiChannelTotalAps = (uint16_t)n;
+
+    for (int i = 0; i < n; i++) {
+        const uint8_t channel = WiFi.channel(i);
+        if (channel >= 1 && channel <= WIFI_CHANNEL_COUNT) {
+            wifiChannelCounts[channel]++;
+            if (WiFi.RSSI(i) > wifiChannelBestRssi[channel]) {
+                wifiChannelBestRssi[channel] = WiFi.RSSI(i);
+            }
+        }
+
+        if (wifiChannelApCount < WIFI_CHANNEL_SCAN_MAX_APS) {
+            String ssid = WiFi.SSID(i);
+            String bssid = WiFi.BSSIDstr(i);
+            WifiApInfo& ap = wifiChannelAps[wifiChannelApCount];
+            ssid.toCharArray(ap.ssid, sizeof(ap.ssid));
+            bssid.toCharArray(ap.bssid, sizeof(ap.bssid));
+            ap.rssi = WiFi.RSSI(i);
+            ap.channel = channel;
+            ap.encryption = WiFi.encryptionType(i);
+            ap.hidden = ssid.length() == 0;
+            wifiChannelApCount++;
+        }
+    }
+    WiFi.scanDelete();
+    wifiChannelSortAps();
+    wifiChannelListSelected = 0;
+    wifiChannelListScroll = 0;
+    setStatus(wifiChannelTotalAps ? "WiFi channels ready" : "No WiFi networks");
+}
+
+uint16_t wifiChannelColor(uint8_t channel) {
+    const uint16_t count = wifiChannelCounts[channel];
+    if (count == 0) return COL_MUTED;
+    if (count <= 2) return COL_GREEN;
+    if (count <= 5) return COL_AMBER;
+    return COL_RED;
+}
+
+void drawWifiChannelSummary() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    char tag[18];
+    snprintf(tag, sizeof(tag), "%u redes", wifiChannelTotalAps);
+    drawHeader("WIFI CHANNELS", tag);
+    drawText(10, 34, "Canales 1-14  OK ver redes del canal", COL_CYAN);
+
+    const uint8_t visible = 7;
+    if (wifiChannelSelected < 1) wifiChannelSelected = 1;
+    if (wifiChannelSelected > WIFI_CHANNEL_COUNT) wifiChannelSelected = WIFI_CHANNEL_COUNT;
+    const uint8_t selectedIndex = wifiChannelSelected - 1;
+    if (selectedIndex < wifiChannelSummaryScroll) wifiChannelSummaryScroll = selectedIndex;
+    if (selectedIndex >= wifiChannelSummaryScroll + visible) wifiChannelSummaryScroll = selectedIndex - visible + 1;
+
+    const int listY = 52;
+    const int rowH = 20;
+    const uint16_t maxCount = wifiChannelMaxCount();
+    for (uint8_t row = 0; row < visible; row++) {
+        const uint8_t channel = wifiChannelSummaryScroll + row + 1;
+        if (channel > WIFI_CHANNEL_COUNT) break;
+        const int y = listY + row * rowH;
+        const bool selected = channel == wifiChannelSelected;
+        const uint16_t color = wifiChannelColor(channel);
+        const uint16_t bg = selected ? color : COL_PANEL;
+        const uint16_t fg = selected ? COL_BG : COL_TEXT;
+        const uint8_t pct = maxCount ? (wifiChannelCounts[channel] * 100) / maxCount : 0;
+
+        frame.fillRoundRect(10, y, 300, 17, 4, bg);
+        frame.drawRoundRect(10, y, 300, 17, 4, selected ? COL_TEXT : COL_GRID);
+        drawTextOn(18, y, String("CH ") + (channel < 10 ? "0" : "") + channel, fg, bg, 1);
+        drawBar(78, y + 4, 126, 8, pct, selected ? COL_BG : color);
+        frame.setTextDatum(TR_DATUM);
+        frame.setTextColor(selected ? COL_BG : color, bg);
+        frame.setTextSize(1);
+        frame.drawString(String(wifiChannelCounts[channel]) + " redes", 302, y, 2);
+        frame.setTextDatum(TL_DATUM);
+    }
+
+    const int infoY = 198;
+    const uint8_t stored = wifiChannelStoredCount(wifiChannelSelected);
+    drawText(12, infoY, String("CH ") + wifiChannelSelected + ": " + wifiChannelCounts[wifiChannelSelected] +
+                      " redes  guardadas " + stored, wifiChannelColor(wifiChannelSelected));
+    drawText(12, infoY + 14, String("Mejor RSSI ") +
+                      (wifiChannelBestRssi[wifiChannelSelected] > -120 ? String(wifiChannelBestRssi[wifiChannelSelected]) + " dBm" : "--"),
+             COL_MUTED);
+    drawFooter("UP/DOWN CANAL  OK VER REDES  BACK SALIR");
+    pushFrame();
+}
+
+void drawWifiChannelDetail() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    const uint8_t storedCount = wifiChannelStoredCount(wifiChannelSelected);
+    char title[18];
+    char tag[18];
+    snprintf(title, sizeof(title), "WIFI CH %u", wifiChannelSelected);
+    snprintf(tag, sizeof(tag), "%u redes", wifiChannelCounts[wifiChannelSelected]);
+    drawHeader(title, tag);
+    drawText(10, 34, String("Redes en canal ") + wifiChannelSelected + "  OK re-escanea", COL_CYAN);
+
+    const uint8_t visible = 6;
+    if (storedCount == 0) {
+        frame.drawRoundRect(18, 70, 284, 92, 5, COL_AMBER);
+        drawText(34, 92, "No hay redes guardadas en este canal.", COL_AMBER);
+        drawText(34, 118, "OK vuelve a escanear todos los canales.", COL_CYAN);
+    } else {
+        if (wifiChannelListSelected >= storedCount) wifiChannelListSelected = storedCount - 1;
+        if (wifiChannelListSelected < wifiChannelListScroll) wifiChannelListScroll = wifiChannelListSelected;
+        if (wifiChannelListSelected >= wifiChannelListScroll + visible) wifiChannelListScroll = wifiChannelListSelected - visible + 1;
+
+        const int listY = 56;
+        const int rowH = 24;
+        for (uint8_t row = 0; row < visible; row++) {
+            const uint8_t ordinal = wifiChannelListScroll + row;
+            if (ordinal >= storedCount) break;
+            const int16_t apIndex = wifiChannelApIndexAt(wifiChannelSelected, ordinal);
+            if (apIndex < 0) break;
+            const WifiApInfo& ap = wifiChannelAps[apIndex];
+            const int y = listY + row * rowH;
+            const bool selected = ordinal == wifiChannelListSelected;
+            const uint16_t bg = selected ? COL_GREEN : COL_PANEL;
+            const uint16_t fg = selected ? COL_BG : COL_TEXT;
+            frame.fillRoundRect(10, y, 300, 21, 4, bg);
+            frame.drawRoundRect(10, y, 300, 21, 4, selected ? COL_TEXT : COL_GRID);
+            drawTextOn(16, y + 2, fitText(wifiSsidText(ap.ssid, ap.hidden), 19), fg, bg, 1);
+            frame.setTextDatum(TR_DATUM);
+            frame.setTextColor(selected ? COL_BG : (ap.rssi > -60 ? COL_GREEN : COL_AMBER), bg);
+            frame.drawString(String(ap.rssi) + "dBm " + wifiEncryptionText(ap.encryption), 303, y + 2, 2);
+            frame.setTextDatum(TL_DATUM);
+        }
+
+        const int16_t selectedIndex = wifiChannelApIndexAt(wifiChannelSelected, wifiChannelListSelected);
+        if (selectedIndex >= 0) {
+            const WifiApInfo& ap = wifiChannelAps[selectedIndex];
+            drawText(14, 204, fitText(String(ap.bssid) + "  " + wifiEncryptionText(ap.encryption), 38), COL_MUTED);
+        }
+    }
+
+    drawFooter("UP/DOWN RED  OK RESCAN  BACK CANALES");
+    pushFrame();
+}
+
+void runWifiChannelAnalyzerApp() {
+    currentScreen = Screen::WifiChannels;
+    bool detail = false;
+    wifiChannelScanAll();
+    drawWifiChannelSummary();
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::LongSelect) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+
+        if (!detail) {
+            if (action == AppAction::Back) {
+                currentScreen = Screen::Home;
+                setStatus("Ready");
+                drawHome();
+                pushFrame();
+                return;
+            } else if (action == AppAction::Up) {
+                wifiChannelSelected = wifiChannelSelected <= 1 ? WIFI_CHANNEL_COUNT : wifiChannelSelected - 1;
+                toneClick();
+            } else if (action == AppAction::Down) {
+                wifiChannelSelected = wifiChannelSelected >= WIFI_CHANNEL_COUNT ? 1 : wifiChannelSelected + 1;
+                toneClick();
+            } else if (action == AppAction::Select) {
+                detail = true;
+                wifiChannelListSelected = 0;
+                wifiChannelListScroll = 0;
+                toneClick(3200, 16);
+                drawWifiChannelDetail();
+                delay(4);
+                continue;
+            } else {
+                delay(4);
+                continue;
+            }
+            drawWifiChannelSummary();
+        } else {
+            const uint8_t storedCount = wifiChannelStoredCount(wifiChannelSelected);
+            if (action == AppAction::Back) {
+                detail = false;
+                toneClick(1600, 10);
+                drawWifiChannelSummary();
+            } else if (action == AppAction::Up && storedCount > 0) {
+                wifiChannelListSelected = wifiChannelListSelected == 0 ? storedCount - 1 : wifiChannelListSelected - 1;
+                toneClick();
+                drawWifiChannelDetail();
+            } else if (action == AppAction::Down && storedCount > 0) {
+                wifiChannelListSelected = (wifiChannelListSelected + 1) % storedCount;
+                toneClick();
+                drawWifiChannelDetail();
+            } else if (action == AppAction::Select) {
+                toneClick(3000, 18);
+                wifiChannelScanAll();
+                detail = false;
+                drawWifiChannelSummary();
+            } else {
+                delay(4);
+                continue;
+            }
+        }
+        delay(4);
+    }
 }
 
 bool wifiScanTargetOnce(int32_t& rssiOut) {
@@ -3966,6 +4256,7 @@ void runHidPadApp() {
 enum DemoLauncherAction : uint8_t {
     DEMO_ACT_BACK = 0,
     DEMO_ACT_WIFI,
+    DEMO_ACT_WIFI_CH,
     DEMO_ACT_BLE,
     DEMO_ACT_GPS_SOS,
     DEMO_ACT_PASSCODE,
@@ -3976,6 +4267,7 @@ enum DemoLauncherAction : uint8_t {
 
 const HidPadEntry DEMO_LAUNCHER_MENU[] = {
     {"WIFI LOCATOR", "Radar RSSI, metros y direccion", DEMO_ACT_WIFI},
+    {"WIFI CHANNELS", "Saturacion por canal 1-14", DEMO_ACT_WIFI_CH},
     {"BLE RADAR", "Proximidad de dispositivos BLE", DEMO_ACT_BLE},
     {"GPS SOS", "Coordenadas grandes de emergencia", DEMO_ACT_GPS_SOS},
     {"PASSCODE SIM", "Animacion visual 9764", DEMO_ACT_PASSCODE},
@@ -3988,6 +4280,7 @@ const HidPadEntry DEMO_LAUNCHER_MENU[] = {
 const char* demoActionTag(uint8_t action) {
     switch (action) {
         case DEMO_ACT_WIFI: return "WIFI";
+        case DEMO_ACT_WIFI_CH: return "CH";
         case DEMO_ACT_BLE: return "BLE";
         case DEMO_ACT_GPS_SOS: return "SOS";
         case DEMO_ACT_PASSCODE: return "SIM";
@@ -4001,6 +4294,7 @@ const char* demoActionTag(uint8_t action) {
 uint16_t demoActionColor(uint8_t action) {
     switch (action) {
         case DEMO_ACT_WIFI: return COL_GREEN;
+        case DEMO_ACT_WIFI_CH: return COL_AMBER;
         case DEMO_ACT_BLE: return COL_CYAN;
         case DEMO_ACT_GPS_SOS: return COL_RED;
         case DEMO_ACT_PASSCODE: return COL_AMBER;
@@ -4139,6 +4433,7 @@ void runCyberDemoLauncherApp() {
             }
             switch (entry.action) {
                 case DEMO_ACT_WIFI: runWifiLocatorApp(); break;
+                case DEMO_ACT_WIFI_CH: runWifiChannelAnalyzerApp(); break;
                 case DEMO_ACT_BLE: runBleDeviceRadarApp(); break;
                 case DEMO_ACT_GPS_SOS: runGpsSosApp(); break;
                 case DEMO_ACT_PASSCODE: runPasscodeSimApp(); break;
@@ -4204,6 +4499,7 @@ void renderCurrent() {
         case Screen::SystemPulse: drawSystemPulse(); break;
         case Screen::GpsRadar: drawGpsRadar(); break;
         case Screen::WifiLocator: drawHome(); break;
+        case Screen::WifiChannels: drawHome(); break;
         case Screen::BleRadar: drawHome(); break;
         case Screen::GpsSos: drawHome(); break;
         case Screen::DemoLauncher: drawHome(); break;
@@ -4245,6 +4541,10 @@ void handleAction(AppAction action) {
             } else if (MENU[menuIndex].screen == Screen::WifiLocator) {
                 toneClick(3200, 18);
                 runWifiLocatorApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::WifiChannels) {
+                toneClick(3200, 18);
+                runWifiChannelAnalyzerApp();
                 return;
             } else if (MENU[menuIndex].screen == Screen::BleRadar) {
                 toneClick(3200, 18);

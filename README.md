@@ -121,6 +121,20 @@ Limitacion importante:
 
 El ESP32-S3 tiene una sola antena WiFi, asi que no puede saber la direccion real exacta de una red como una brujula. El radar, los metros aproximados y `DIR SCAN` son relativos: sirven para caminar, girar, comparar intensidad y buscar el punto de mayor senal. Para direccion real o distancia exacta se necesitaria hardware con varias antenas, antena direccional o mediciones con GPS/triangulacion mas avanzada.
 
+### WIFI CHANNELS
+
+Analizador pasivo de saturacion WiFi por canal.
+
+- Escanea redes WiFi cercanas y cuenta cuantas hay en cada canal del 1 al 14.
+- Muestra una lista con barras por canal, conteo de redes y mejor RSSI detectado.
+- `UP/DOWN` selecciona canal.
+- `OK` abre el detalle del canal seleccionado.
+- En el detalle muestra SSID, BSSID, RSSI y cifrado de las redes guardadas en ese canal.
+- `OK` dentro del detalle re-escanea todos los canales.
+- No se conecta a ninguna red.
+- No intenta contrasenas.
+- Sirve para diagnosticar saturacion y elegir canales menos congestionados.
+
 ### BLE DEVICE RADAR
 
 Radar pasivo de anuncios Bluetooth Low Energy cercanos.
@@ -160,7 +174,7 @@ Modo rapido para grabar reels.
 - Lista demos principales con tarjeta destacada, etiqueta de categoria y modo etico visible.
 - Al seleccionar una demo muestra cuenta regresiva 3, 2, 1 con pantalla `EN VIVO`.
 - `BACK` permite cancelar durante la cuenta regresiva antes de lanzar la demo.
-- Lanza WiFi Locator, BLE Radar, GPS SOS, Passcode Sim, HID Pad, iPhone Remote o Radio Scope.
+- Lanza WiFi Locator, WiFi Channels, BLE Radar, GPS SOS, Passcode Sim, HID Pad, iPhone Remote o Radio Scope.
 - Muestra `@pepeangelll` como referencia visual dentro del launcher.
 
 ### SD VAULT
