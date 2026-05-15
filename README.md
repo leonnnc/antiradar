@@ -172,10 +172,12 @@ Para emergencia real, las coordenadas decimales `LAT` y `LON` son el dato princi
 Monitor visual de estadisticas publicas/permitidas de Instagram mediante un endpoint propio.
 
 - Incluye teclado virtual para escribir un usuario de Instagram.
-- Teclado basado en matriz 4x10 con fila especial `DEL`, `CLEAR`, `OK`, `X` y `.`.
+- Teclado basado en matriz 4x10 con fila especial `DEL`, `CLEAR`, `OK`, `X` y `SHIFT`.
 - Usa `UP/DOWN` para navegar por las teclas y `OK` para seleccionar.
-- La tecla `OK` del teclado cambia a pantalla de resultados y consulta el endpoint si esta configurado.
-- `BACK` borra el ultimo caracter; si el usuario queda vacio, vuelve al menu.
+- Antes del usuario escanea redes WiFi, permite elegir una red y escribir la contrasena con el mismo teclado.
+- El teclado incluye modo `SHIFT/LOW` para mayusculas y simbolos basicos en passwords.
+- Despues de conectar WiFi muestra el teclado de usuario; la tecla `OK` cambia a resultados y consulta el endpoint si esta configurado.
+- `BACK` borra el ultimo caracter; si el campo queda vacio, regresa a la pantalla anterior.
 - No requiere microSD para capturar el usuario ni mostrar la pantalla de resultados.
 - No guarda tokens ni credenciales de Meta dentro del firmware.
 - Espera un JSON simple con `username`, `followers` o `followers_count`, y `media` o `media_count`.
@@ -184,8 +186,6 @@ Monitor visual de estadisticas publicas/permitidas de Instagram mediante un endp
 Config opcional por build flags privados:
 
 ```txt
--D IG_WIFI_SSID=\"TuWiFi\"
--D IG_WIFI_PASS=\"TuPassword\"
 -D IG_API_URL=\"https://tu-api.com/ig?user={user}\"
 ```
 

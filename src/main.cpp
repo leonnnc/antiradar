@@ -90,6 +90,7 @@ constexpr uint32_t GPS_PLACE_RESCAN_MS = 15000;
 constexpr float GPS_PLACE_RESCAN_KM = 1.0f;
 constexpr uint32_t GPS_PLACE_MAX_ROWS = 65000;
 constexpr uint8_t WIFI_MAX_APS = 24;
+constexpr uint8_t IG_WIFI_SCAN_MAX_APS = 18;
 constexpr uint8_t WIFI_CHANNEL_COUNT = 14;
 constexpr uint8_t WIFI_CHANNEL_SCAN_MAX_APS = 64;
 constexpr uint8_t WIFI_HISTORY_LEN = 44;
@@ -219,6 +220,13 @@ struct IgMonitorResult {
     char status[48];
 };
 
+struct IgWifiApInfo {
+    char ssid[33];
+    int32_t rssi;
+    uint8_t channel;
+    uint8_t encryption;
+};
+
 const GpsPlace GPS_PLACES[] = {
     {"Chihuahua", "Chihuahua", "Chihuahua MX", 28.6353f, -106.0889f, 65},
     {"Ciudad Juarez", "Juarez", "Chihuahua MX", 31.6904f, -106.4245f, 70},
@@ -291,10 +299,16 @@ uint8_t bleHistoryHead = 0;
 uint32_t bleScanPass = 0;
 IgMonitorConfig igConfig = {};
 IgMonitorResult igResult = {};
+IgWifiApInfo igWifiAps[IG_WIFI_SCAN_MAX_APS] = {};
 char igUsername[32] = "pepeangelll";
+char igWifiPassword[65] = "";
 bool igHasResult = false;
+uint8_t igWifiCount = 0;
+uint8_t igWifiSelected = 0;
+uint8_t igWifiScroll = 0;
 uint8_t igKbRow = 1;
 uint8_t igKbCol = 0;
+bool igKbShift = false;
 
 class BleRemoteServerCallbacks : public BLEServerCallbacks {
 public:
@@ -2072,7 +2086,14 @@ const char* IG_KB_ROWS[] = {
     "1234567890",
     "qwertyuiop",
     "asdfghjkl_",
-    "zxcvbnm..."
+    "zxcvbnm.-_"
+};
+
+const char* IG_KB_SHIFT_ROWS[] = {
+    "!@#$%^&*()",
+    "QWERTYUIOP",
+    "ASDFGHJKL_",
+    "ZXCVBNM.-_"
 };
 
 enum IgSpecialKey : uint8_t {
@@ -2080,10 +2101,10 @@ enum IgSpecialKey : uint8_t {
     IG_KEY_CLEAR = 1,
     IG_KEY_GO = 2,
     IG_KEY_CANCEL = 3,
-    IG_KEY_DOT = 4
+    IG_KEY_SHIFT = 4
 };
 
-const char* IG_SPECIAL_LABELS[] = {"DEL", "CLEAR", "OK", "X", "."};
+const char* IG_SPECIAL_LABELS[] = {"DEL", "CLEAR", "OK", "X", "SHIFT"};
 
 uint8_t igAlphaColToSpecial(uint8_t col) {
     return col / 2;
@@ -2095,7 +2116,7 @@ uint8_t igSpecialToAlphaCol(uint8_t special) {
 
 char igKeyCharAt(uint8_t row, uint8_t col) {
     if (row > 3 || col > 9) return 0;
-    const char* rowText = IG_KB_ROWS[row];
+    const char* rowText = igKbShift ? IG_KB_SHIFT_ROWS[row] : IG_KB_ROWS[row];
     if (col >= strlen(rowText)) return 0;
     return rowText[col];
 }
@@ -2104,8 +2125,6 @@ String igConfigTemplate() {
     String out;
     out += "# CYBERDECK Insta Monitor\r\n";
     out += "# No pongas tokens de Meta dentro del firmware publico.\r\n";
-    out += "WIFI_SSID=TuWiFi\r\n";
-    out += "WIFI_PASS=TuPassword\r\n";
     out += "API_URL=https://tu-api.com/ig?user={user}\r\n";
     return out;
 }
@@ -2119,11 +2138,16 @@ String igTrimValue(String value) {
 }
 
 bool igLoadConfig() {
+    char currentSsid[sizeof(igConfig.wifiSsid)];
+    char currentPass[sizeof(igConfig.wifiPass)];
+    strlcpy(currentSsid, igConfig.wifiSsid, sizeof(currentSsid));
+    strlcpy(currentPass, igConfig.wifiPass, sizeof(currentPass));
+
     memset(&igConfig, 0, sizeof(igConfig));
-    strlcpy(igConfig.wifiSsid, IG_WIFI_SSID, sizeof(igConfig.wifiSsid));
-    strlcpy(igConfig.wifiPass, IG_WIFI_PASS, sizeof(igConfig.wifiPass));
+    strlcpy(igConfig.wifiSsid, currentSsid[0] ? currentSsid : IG_WIFI_SSID, sizeof(igConfig.wifiSsid));
+    strlcpy(igConfig.wifiPass, currentSsid[0] ? currentPass : IG_WIFI_PASS, sizeof(igConfig.wifiPass));
     strlcpy(igConfig.apiUrl, IG_API_URL, sizeof(igConfig.apiUrl));
-    igConfig.loaded = igConfig.wifiSsid[0] != '\0' && igConfig.apiUrl[0] != '\0';
+    igConfig.loaded = igConfig.apiUrl[0] != '\0';
     return igConfig.loaded;
 }
 
@@ -2176,30 +2200,177 @@ String igBuildUrl(const char* username) {
     return url;
 }
 
+void igResetKeyboardCursor() {
+    igKbRow = 1;
+    igKbCol = 0;
+    igKbShift = false;
+}
+
+bool igWifiIsOpen(uint8_t enc) {
+    return enc == WIFI_AUTH_OPEN;
+}
+
+String igWifiSsidText(const char* ssid) {
+    if (!ssid || ssid[0] == '\0') return "(sin nombre)";
+    return String(ssid);
+}
+
+void igSortWifiAps() {
+    for (uint8_t i = 0; i < igWifiCount; i++) {
+        for (uint8_t j = i + 1; j < igWifiCount; j++) {
+            if (igWifiAps[j].rssi > igWifiAps[i].rssi) {
+                IgWifiApInfo tmp = igWifiAps[i];
+                igWifiAps[i] = igWifiAps[j];
+                igWifiAps[j] = tmp;
+            }
+        }
+    }
+}
+
+int8_t igFindWifiAp(const String& ssid) {
+    for (uint8_t i = 0; i < igWifiCount; i++) {
+        if (ssid.equals(igWifiAps[i].ssid)) return (int8_t)i;
+    }
+    return -1;
+}
+
+void igStoreWifiAp(const String& ssid, int32_t rssi, uint8_t channel, uint8_t encryption) {
+    if (!ssid.length()) return;
+
+    const int8_t existing = igFindWifiAp(ssid);
+    if (existing >= 0) {
+        IgWifiApInfo& ap = igWifiAps[existing];
+        if (rssi > ap.rssi) {
+            ap.rssi = rssi;
+            ap.channel = channel;
+            ap.encryption = encryption;
+        }
+        return;
+    }
+
+    uint8_t slot = igWifiCount;
+    if (igWifiCount < IG_WIFI_SCAN_MAX_APS) {
+        igWifiCount++;
+    } else {
+        slot = 0;
+        for (uint8_t i = 1; i < igWifiCount; i++) {
+            if (igWifiAps[i].rssi < igWifiAps[slot].rssi) slot = i;
+        }
+        if (rssi <= igWifiAps[slot].rssi) return;
+    }
+
+    ssid.toCharArray(igWifiAps[slot].ssid, sizeof(igWifiAps[slot].ssid));
+    igWifiAps[slot].rssi = rssi;
+    igWifiAps[slot].channel = channel;
+    igWifiAps[slot].encryption = encryption;
+}
+
+void drawIgWifiScanning(const char* line) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("INSTA WIFI", "scan");
+    frame.drawRoundRect(18, 50, 284, 116, 5, COL_CYAN);
+    drawText(34, 72, line, COL_CYAN);
+    drawText(34, 100, "Elige tu red autorizada.", COL_MUTED);
+    drawText(34, 126, "Luego escribes password y usuario.", COL_AMBER);
+    drawFooter("BACK HOME");
+    pushFrame();
+}
+
+void igScanWifiNetworks() {
+    wifiPrepareMode();
+    drawIgWifiScanning("Escaneando redes WiFi...");
+    igWifiCount = 0;
+    int n = WiFi.scanNetworks(false, true, false, 180);
+    if (n < 0) n = 0;
+    for (int i = 0; i < n; i++) {
+        igStoreWifiAp(WiFi.SSID(i), WiFi.RSSI(i), WiFi.channel(i), WiFi.encryptionType(i));
+    }
+    WiFi.scanDelete();
+    igSortWifiAps();
+    igWifiSelected = 0;
+    igWifiScroll = 0;
+    setStatus(igWifiCount ? "IG WiFi scan ready" : "IG no WiFi networks");
+}
+
+void igWifiMove(int8_t delta) {
+    if (!igWifiCount) return;
+    if (delta > 0) {
+        igWifiSelected = (igWifiSelected + 1) % igWifiCount;
+    } else {
+        igWifiSelected = igWifiSelected == 0 ? igWifiCount - 1 : igWifiSelected - 1;
+    }
+
+    const uint8_t visible = 6;
+    if (igWifiSelected < igWifiScroll) igWifiScroll = igWifiSelected;
+    if (igWifiSelected >= igWifiScroll + visible) igWifiScroll = igWifiSelected - visible + 1;
+}
+
+void drawInstaWifiList() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("INSTA WIFI", igWifiCount ? "elige red" : "sin redes");
+    drawText(10, 34, "Primero conecta WiFi para consultar API", COL_CYAN);
+
+    const int listY = 56;
+    const int rowH = 25;
+    const uint8_t visible = 6;
+    for (uint8_t row = 0; row < visible; row++) {
+        const uint8_t idx = igWifiScroll + row;
+        if (idx >= igWifiCount) break;
+        const IgWifiApInfo& ap = igWifiAps[idx];
+        const int y = listY + row * rowH;
+        const bool selected = idx == igWifiSelected;
+        const uint16_t bg = selected ? COL_GREEN : COL_PANEL;
+        const uint16_t fg = selected ? COL_BG : COL_TEXT;
+        frame.fillRoundRect(10, y, 300, 21, 4, bg);
+        frame.drawRoundRect(10, y, 300, 21, 4, selected ? COL_TEXT : COL_GRID);
+        drawTextOn(16, y + 2, fitText(igWifiSsidText(ap.ssid), 18), fg, bg, 1);
+        frame.setTextDatum(TR_DATUM);
+        frame.setTextColor(selected ? COL_BG : (ap.rssi > -60 ? COL_GREEN : COL_AMBER), bg);
+        frame.drawString(String(ap.rssi) + "dBm CH" + ap.channel, 303, y + 2, 2);
+        frame.setTextDatum(TL_DATUM);
+    }
+
+    if (!igWifiCount) {
+        drawText(28, 94, "No se detectaron redes.", COL_AMBER);
+        drawText(28, 118, "OK vuelve a escanear.", COL_CYAN);
+    } else {
+        const IgWifiApInfo& ap = igWifiAps[igWifiSelected];
+        drawText(14, 210, fitText(String(ap.channel) + "ch  " + wifiEncryptionText(ap.encryption), 38), COL_MUTED);
+    }
+    drawFooter("OK CONECTAR  UP/DOWN MOVER  BACK HOME");
+    pushFrame();
+}
+
 void drawIgStatus(const char* line, uint16_t color = COL_CYAN) {
     frame.fillSprite(COL_BG);
     drawGrid();
     drawHeader("INSTA MONITOR", "online");
     frame.drawRoundRect(18, 52, 284, 118, 5, color);
     drawText(34, 76, line, color);
-    drawText(34, 104, "Consulta tu endpoint autorizado.", COL_MUTED);
+    drawText(34, 104, fitText(String("Red: ") + (igConfig.wifiSsid[0] ? igConfig.wifiSsid : "--"), 30), COL_MUTED);
     drawText(34, 130, "Sin scraping, sin tokens en firmware.", COL_AMBER);
     drawFooter("BACK CANCELA");
     pushFrame();
 }
 
 bool igConnectWifi() {
-    if (WiFi.status() == WL_CONNECTED) return true;
+    if (igConfig.wifiSsid[0] == '\0') return false;
+    if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == igConfig.wifiSsid) return true;
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(false);
     delay(120);
-    WiFi.begin(igConfig.wifiSsid, igConfig.wifiPass);
+    WiFi.persistent(false);
+    if (igConfig.wifiPass[0] != '\0') WiFi.begin(igConfig.wifiSsid, igConfig.wifiPass);
+    else WiFi.begin(igConfig.wifiSsid);
     const uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 14000) {
         drawIgStatus("Conectando WiFi...");
         serviceGps(2);
         delay(240);
-        if (inputRead() == AppAction::Back) return false;
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) return false;
     }
     return WiFi.status() == WL_CONNECTED;
 }
@@ -2334,15 +2505,17 @@ void drawIgSpecialKey(uint8_t special, bool selected) {
     const int x = 10 + startCol * (keyW + gap);
     const int y = 96 + 4 * (keyH + gap);
     const int w = keyW * 2 + gap;
-    const uint16_t accent = special == IG_KEY_GO ? COL_GREEN : (special == IG_KEY_CANCEL ? COL_RED : COL_CYAN);
+    const bool shiftKey = special == IG_KEY_SHIFT;
+    const uint16_t accent = special == IG_KEY_GO ? COL_GREEN : (special == IG_KEY_CANCEL ? COL_RED : (shiftKey && igKbShift ? COL_AMBER : COL_CYAN));
     const uint16_t bg = selected ? accent : COL_BG;
     const uint16_t fg = selected ? COL_BG : accent;
+    const char* label = shiftKey && igKbShift ? "LOW" : IG_SPECIAL_LABELS[special];
     frame.fillRect(x, y, w, keyH + 2, bg);
     frame.drawRect(x, y, w, keyH + 2, accent);
     frame.setTextDatum(MC_DATUM);
     frame.setTextColor(fg, bg);
     frame.setTextSize(1);
-    frame.drawString(IG_SPECIAL_LABELS[special], x + w / 2, y + (keyH + 2) / 2, 1);
+    frame.drawString(label, x + w / 2, y + (keyH + 2) / 2, 1);
     frame.setTextDatum(TL_DATUM);
 }
 
@@ -2359,17 +2532,22 @@ void drawIgKeyboardKeys() {
     }
 }
 
-void drawIgTextBox() {
+void drawIgTextBox(const char* value, size_t maxLen, const char* prefix, bool mask) {
     frame.fillRect(10, 54, 300, 34, COL_BG);
     frame.drawRect(10, 54, 300, 34, COL_AMBER);
-    String text = String("@") + igUsername;
+    String text = prefix;
+    if (mask) {
+        for (size_t i = 0; value[i] != '\0'; i++) text += '*';
+    } else {
+        text += value;
+    }
     if ((millis() / 500) % 2 == 0) text += "_";
     if (text.length() > 28) text = text.substring(text.length() - 28);
     drawTextOn(16, 63, text, COL_TEXT, COL_BG, 1);
     frame.setTextDatum(TR_DATUM);
     frame.setTextColor(COL_MUTED, COL_BG);
     frame.setTextSize(1);
-    frame.drawString(String(strlen(igUsername)) + "/30", 304, 76, 1);
+    frame.drawString(String(strlen(value)) + "/" + String(maxLen - 1), 304, 76, 1);
     frame.setTextDatum(TL_DATUM);
 }
 
@@ -2378,10 +2556,29 @@ void drawInstaKeyboard() {
     drawGrid();
     drawHeader("INSTA MONITOR", "teclado");
     drawText(10, 34, "Escribe usuario y selecciona OK", COL_CYAN);
-    drawIgTextBox();
+    drawIgTextBox(igUsername, sizeof(igUsername), "@", false);
     drawIgKeyboardKeys();
     drawFooter("UP/DOWN NAVEGA  OK SELECT  BACK DEL");
     pushFrame();
+}
+
+void drawInstaWifiPasswordKeyboard() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("INSTA WIFI", "password");
+    drawText(10, 34, fitText(String("Red: ") + igConfig.wifiSsid, 38), COL_CYAN);
+    drawIgTextBox(igWifiPassword, sizeof(igWifiPassword), "", true);
+    drawIgKeyboardKeys();
+    drawFooter("UP/DOWN NAVEGA  OK SELECT  BACK DEL");
+    pushFrame();
+}
+
+void igApplySelectedWifi(bool clearPassword) {
+    if (!igWifiCount) return;
+    const IgWifiApInfo& ap = igWifiAps[igWifiSelected];
+    strlcpy(igConfig.wifiSsid, ap.ssid, sizeof(igConfig.wifiSsid));
+    if (clearPassword) igWifiPassword[0] = '\0';
+    strlcpy(igConfig.wifiPass, igWifiPassword, sizeof(igConfig.wifiPass));
 }
 
 void drawInstaResults() {
@@ -2404,7 +2601,7 @@ void drawInstaResults() {
     } else {
         drawText(24, 116, "Resultados no disponibles aun.", COL_AMBER);
         drawText(24, 138, "Configura backend con build flags:", COL_CYAN);
-        drawText(24, 156, "IG_WIFI_SSID / IG_API_URL", COL_TEXT);
+        drawText(24, 156, "IG_API_URL", COL_TEXT);
         drawText(24, 176, fitText(igResult.status[0] ? igResult.status : "API pendiente", 34), COL_MUTED);
     }
 
@@ -2412,13 +2609,13 @@ void drawInstaResults() {
     pushFrame();
 }
 
-int igExecuteCurrentKey() {
+int igExecuteCurrentKey(char* value, size_t capacity) {
     if (igKbRow < 4) {
         const char key = igKeyCharAt(igKbRow, igKbCol);
-        if (key && strlen(igUsername) < sizeof(igUsername) - 1) {
-            const size_t len = strlen(igUsername);
-            igUsername[len] = key;
-            igUsername[len + 1] = '\0';
+        if (key && strlen(value) < capacity - 1) {
+            const size_t len = strlen(value);
+            value[len] = key;
+            value[len + 1] = '\0';
             igHasResult = false;
             toneClick(2500, 10);
         }
@@ -2427,14 +2624,14 @@ int igExecuteCurrentKey() {
 
     switch (igAlphaColToSpecial(igKbCol)) {
         case IG_KEY_DEL: {
-            const size_t len = strlen(igUsername);
-            if (len > 0) igUsername[len - 1] = '\0';
+            const size_t len = strlen(value);
+            if (len > 0) value[len - 1] = '\0';
             igHasResult = false;
             toneClick(1200, 10);
             return 0;
         }
         case IG_KEY_CLEAR:
-            igUsername[0] = '\0';
+            value[0] = '\0';
             igHasResult = false;
             toneClick(1000, 20);
             return 0;
@@ -2444,25 +2641,29 @@ int igExecuteCurrentKey() {
         case IG_KEY_CANCEL:
             toneClick(1200, 40);
             return 2;
-        case IG_KEY_DOT:
-            if (strlen(igUsername) < sizeof(igUsername) - 1) {
-                const size_t len = strlen(igUsername);
-                igUsername[len] = '.';
-                igUsername[len + 1] = '\0';
-            }
+        case IG_KEY_SHIFT:
+            igKbShift = !igKbShift;
             toneClick(2400, 10);
             return 0;
     }
     return 0;
 }
 
+enum class IgMonitorStage : uint8_t {
+    WifiList,
+    WifiPassword,
+    Username,
+    Results
+};
+
 void runInstaMonitorApp() {
     currentScreen = Screen::InstaMonitor;
     igLoadConfig();
     igResult = {};
     igHasResult = false;
-    bool resultsView = false;
-    drawInstaKeyboard();
+    IgMonitorStage stage = IgMonitorStage::WifiList;
+    igScanWifiNetworks();
+    drawInstaWifiList();
 
     while (true) {
         serviceGps(3);
@@ -2475,9 +2676,102 @@ void runInstaMonitorApp() {
             return;
         }
 
-        if (resultsView) {
+        if (stage == IgMonitorStage::WifiList) {
             if (action == AppAction::Back) {
-                resultsView = false;
+                currentScreen = Screen::Home;
+                setStatus("Ready");
+                drawHome();
+                pushFrame();
+                return;
+            } else if (action == AppAction::Up) {
+                igWifiMove(-1);
+                toneClick();
+                drawInstaWifiList();
+            } else if (action == AppAction::Down) {
+                igWifiMove(1);
+                toneClick();
+                drawInstaWifiList();
+            } else if (action == AppAction::Select) {
+                if (!igWifiCount) {
+                    toneClick(2600, 18);
+                    igScanWifiNetworks();
+                    drawInstaWifiList();
+                } else {
+                    igApplySelectedWifi(true);
+                    toneClick(3000, 16);
+                    if (igWifiIsOpen(igWifiAps[igWifiSelected].encryption)) {
+                        if (igConnectWifi()) {
+                            stage = IgMonitorStage::Username;
+                            igResetKeyboardCursor();
+                            drawInstaKeyboard();
+                        } else {
+                            drawIgStatus("WiFi fallo. Reintenta.", COL_RED);
+                            delay(900);
+                            drawInstaWifiList();
+                        }
+                    } else {
+                        stage = IgMonitorStage::WifiPassword;
+                        igResetKeyboardCursor();
+                        drawInstaWifiPasswordKeyboard();
+                    }
+                }
+            } else {
+                delay(4);
+            }
+            continue;
+        }
+
+        if (stage == IgMonitorStage::WifiPassword) {
+            if (action == AppAction::Up) {
+                igCursorUp();
+                toneClick();
+            } else if (action == AppAction::Down) {
+                igCursorDown();
+                toneClick();
+            } else if (action == AppAction::Back) {
+                const size_t len = strlen(igWifiPassword);
+                if (len > 0) {
+                    igWifiPassword[len - 1] = '\0';
+                    toneClick(1200, 10);
+                    drawInstaWifiPasswordKeyboard();
+                } else {
+                    stage = IgMonitorStage::WifiList;
+                    toneClick(1200, 12);
+                    drawInstaWifiList();
+                }
+            } else if (action == AppAction::Select) {
+                const int result = igExecuteCurrentKey(igWifiPassword, sizeof(igWifiPassword));
+                if (result == 1) {
+                    igApplySelectedWifi(false);
+                    if (igConnectWifi()) {
+                        stage = IgMonitorStage::Username;
+                        igResetKeyboardCursor();
+                        drawInstaKeyboard();
+                    } else {
+                        drawIgStatus("WiFi fallo. Revisa password.", COL_RED);
+                        delay(1100);
+                        drawInstaWifiPasswordKeyboard();
+                    }
+                    delay(4);
+                    continue;
+                }
+                if (result == 2) {
+                    stage = IgMonitorStage::WifiList;
+                    drawInstaWifiList();
+                    delay(4);
+                    continue;
+                }
+                drawInstaWifiPasswordKeyboard();
+            } else {
+                delay(4);
+            }
+            continue;
+        }
+
+        if (stage == IgMonitorStage::Results) {
+            if (action == AppAction::Back) {
+                stage = IgMonitorStage::Username;
+                igResetKeyboardCursor();
                 drawInstaKeyboard();
             } else if (action == AppAction::Select) {
                 igFetchStats();
@@ -2498,29 +2792,27 @@ void runInstaMonitorApp() {
             const size_t len = strlen(igUsername);
             if (len > 0) igUsername[len - 1] = '\0';
             else {
-                currentScreen = Screen::Home;
-                setStatus("Ready");
-                drawHome();
-                pushFrame();
-                return;
+                stage = IgMonitorStage::WifiList;
+                drawInstaWifiList();
+                delay(4);
+                continue;
             }
             igHasResult = false;
             toneClick(1200, 10);
         } else if (action == AppAction::Select) {
-            const int result = igExecuteCurrentKey();
+            const int result = igExecuteCurrentKey(igUsername, sizeof(igUsername));
             if (result == 1 && strlen(igUsername) > 0) {
                 igFetchStats();
-                resultsView = true;
+                stage = IgMonitorStage::Results;
                 drawInstaResults();
                 delay(4);
                 continue;
             }
             if (result == 2) {
-                currentScreen = Screen::Home;
-                setStatus("Ready");
-                drawHome();
-                pushFrame();
-                return;
+                stage = IgMonitorStage::WifiList;
+                drawInstaWifiList();
+                delay(4);
+                continue;
             }
         } else {
             delay(4);
