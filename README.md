@@ -181,7 +181,7 @@ Monitor visual de estadisticas publicas/permitidas de Instagram mediante un endp
 - No requiere microSD para capturar el usuario ni mostrar la pantalla de resultados.
 - No guarda tokens ni credenciales de Meta dentro del firmware.
 - Espera un JSON simple con `username`, `followers` o `followers_count`, y `media` o `media_count`.
-- Si no hay endpoint configurado, muestra un resultado visual `DEMO sin API` claramente marcado.
+- Si no hay endpoint configurado, muestra un resultado visual `DEMO sin API` claramente marcado; esos numeros no son reales.
 - Para datos reales se debe configurar `IG_API_URL` hacia un backend propio/autorizado.
 
 Config opcional por build flags privados:
@@ -202,6 +202,14 @@ Ejemplo de respuesta JSON esperada:
 ```
 
 La consulta a Instagram debe hacerse desde un backend propio usando APIs permitidas, por ejemplo Meta Graph API para cuentas profesionales autorizadas. Evita scraping y no publiques tokens.
+
+Backend incluido:
+
+```txt
+backend/instagram-meta-worker/
+```
+
+Ese worker devuelve el JSON que el ESP32 ya entiende. Requiere secretos `META_ACCESS_TOKEN` e `IG_USER_ID` guardados en Cloudflare, nunca en el firmware.
 
 ### CYBER DEMO LAUNCHER
 
@@ -378,6 +386,7 @@ include/CyberdeckPins.h  Pines del hardware
 include/AppInput.h       API comun de botones y encoder
 src/AppInput.cpp         Lectura de botones, encoder, debounce y long press
 src/main.cpp             Launcher, apps visuales, GPS, SD, HID USB y BLE
+backend/instagram-meta-worker/ Backend opcional para datos reales de Insta Monitor
 platformio.ini           Configuracion ESP32-S3, TFT_eSPI, librerias y USB HID
 ```
 
