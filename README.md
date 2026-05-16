@@ -179,13 +179,16 @@ Modo rapido para grabar reels.
 
 ### SD VAULT
 
-Herramienta de prueba y diagnostico para la tarjeta microSD.
+Explorador completo para la tarjeta microSD.
 
 - Usa bus SPI dedicado.
-- Muestra tipo de tarjeta, velocidad de montaje y conteo basico de archivos/carpetas.
-- Crea carpetas base: `/APPS`, `/APPS/LOGS`, `/APPS/EXPORTS`.
-- Escribe archivo de prueba `/APPS/APP_TEST.txt`.
-- Sirve para validar energia, montaje FAT32 y cableado del lector.
+- Navega carpetas desde la raiz con `UP/DOWN`, `OK` y `BACK`.
+- Muestra carpetas, archivos, tamanos y ruta actual.
+- Permite crear carpetas y archivos `.txt` con teclado virtual en pantalla.
+- Permite ver archivos de texto con scroll.
+- Permite eliminar archivos y carpetas con confirmacion.
+- Las carpetas se eliminan de forma recursiva, incluyendo su contenido.
+- Si no hay tarjeta o falla el montaje, `OK` reintenta detectar la microSD.
 
 ### RADIO SCOPE
 

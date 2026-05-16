@@ -92,6 +92,10 @@ constexpr uint8_t WIFI_CHANNEL_SCAN_MAX_APS = 64;
 constexpr uint8_t WIFI_HISTORY_LEN = 44;
 constexpr uint8_t BLE_MAX_DEVICES = 24;
 constexpr uint8_t BLE_HISTORY_LEN = 36;
+constexpr uint8_t SD_EXPLORER_MAX_ENTRIES = 64;
+constexpr uint8_t SD_EXPLORER_NAME_LEN = 44;
+constexpr uint16_t SD_EXPLORER_PATH_LEN = 192;
+constexpr uint16_t SD_VIEW_MAX_TEXT = 2600;
 
 enum class Screen : uint8_t {
     Home,
@@ -125,7 +129,7 @@ const MenuEntry MENU[] = {
     {"BLE DEVICE RADAR", "Radar de dispositivos Bluetooth", Screen::BleRadar},
     {"GPS SOS MODE", "Coordenadas grandes para emergencia", Screen::GpsSos},
     {"CYBER DEMO", "Launcher rapido para reels", Screen::DemoLauncher},
-    {"SD VAULT", "microSD y prueba de escritura", Screen::SdVault},
+    {"SD VAULT", "Explorador microSD completo", Screen::SdVault},
     {"RADIO SCOPE", "Escaneo pasivo 2.4 GHz", Screen::RadioScope},
     {"PASSCODE SIM", "Demo visual de PIN", Screen::PasscodeSim},
     {"HID PAD", "Apps, terminal y multimedia", Screen::HidDemo},
@@ -186,6 +190,13 @@ struct BleDeviceInfo {
     bool hasTxPower;
     bool hasManufacturer;
     bool hasAppearance;
+};
+
+struct SdExplorerEntry {
+    char name[SD_EXPLORER_NAME_LEN];
+    bool directory;
+    bool parent;
+    uint32_t size;
 };
 
 const GpsPlace GPS_PLACES[] = {
@@ -258,6 +269,19 @@ int16_t bleTrendDb = 0;
 int16_t bleHistory[BLE_HISTORY_LEN] = {};
 uint8_t bleHistoryHead = 0;
 uint32_t bleScanPass = 0;
+SdExplorerEntry sdEntries[SD_EXPLORER_MAX_ENTRIES] = {};
+uint8_t sdExplorerCount = 0;
+uint8_t sdExplorerSelected = 0;
+uint8_t sdExplorerScroll = 0;
+uint8_t sdActionSelected = 0;
+uint8_t sdKeyboardIndex = 10;
+uint16_t sdTextScroll = 0;
+bool sdCreateDirectoryMode = false;
+bool sdConfirmDeleteYes = false;
+char sdCurrentPath[SD_EXPLORER_PATH_LEN] = "/";
+char sdKeyboardValue[SD_EXPLORER_NAME_LEN] = "";
+char sdViewerPath[SD_EXPLORER_PATH_LEN] = "";
+String sdViewerText;
 
 class BleRemoteServerCallbacks : public BLEServerCallbacks {
 public:
@@ -1381,23 +1405,786 @@ String sdTypeText() {
 }
 
 void drawSdVault() {
-    uint16_t dirs = 0;
-    uint16_t files = 0;
-    countRootFiles(dirs, files);
-
     frame.fillSprite(COL_BG);
     drawGrid();
-    drawHeader("SD VAULT", sdReady ? "mounted" : "offline");
+    drawHeader("SD VAULT", sdReady ? "explorer" : "offline");
 
-    frame.drawRoundRect(10, 42, 300, 120, 5, sdReady ? COL_CYAN : COL_RED);
+    frame.drawRoundRect(10, 42, 300, 128, 5, sdReady ? COL_CYAN : COL_RED);
     drawText(22, 54, String("Card: ") + sdTypeText(), sdReady ? COL_GREEN : COL_RED);
     drawText(22, 76, String("SPI: ") + String((int)CD_SD_SCK) + "/" + String((int)CD_SD_MOSI) + "/" + String((int)CD_SD_MISO) + " CS" + String((int)CD_SD_CS), COL_MUTED);
     drawText(22, 98, String("Speed: ") + String(sdMountHz / 1000000) + " MHz", COL_MUTED);
-    drawText(22, 120, String("Root dirs/files: ") + String(dirs) + "/" + String(files), COL_CYAN);
-    drawText(22, 142, "OK creates /APPS and writes APP_TEST.txt", COL_AMBER);
+    drawText(22, 120, "Explorador: ver, crear y borrar.", COL_CYAN);
+    drawText(22, 142, "OK abre el gestor de archivos.", COL_AMBER);
 
     drawText(12, 188, String("Status: ") + statusLine, COL_CYAN);
-    drawFooter("OK TEST WRITE  BACK EXIT");
+    drawFooter("OK EXPLORAR  BACK EXIT");
+}
+
+enum class SdExplorerMode : uint8_t {
+    Browser,
+    Actions,
+    Keyboard,
+    ConfirmDelete,
+    Viewer
+};
+
+enum SdExplorerAction : uint8_t {
+    SD_ACTION_OPEN = 0,
+    SD_ACTION_DELETE,
+    SD_ACTION_NEW_FILE,
+    SD_ACTION_NEW_DIR,
+    SD_ACTION_REFRESH,
+    SD_ACTION_CANCEL
+};
+
+const char* SD_KB_ROWS[] = {
+    "1234567890",
+    "qwertyuiop",
+    "asdfghjkl_",
+    "zxcvbnm.-_"
+};
+
+const char* SD_KB_SPECIAL[] = {"DEL", "CLEAR", "OK", "X", "AUTO"};
+
+bool sdExplorerIsRoot() {
+    return strcmp(sdCurrentPath, "/") == 0;
+}
+
+String sdFormatBytes(uint64_t bytes) {
+    if (bytes < 1024ULL) return String((uint32_t)bytes) + "B";
+    if (bytes < 1024ULL * 1024ULL) return String((float)bytes / 1024.0f, 1) + "KB";
+    if (bytes < 1024ULL * 1024ULL * 1024ULL) return String((float)bytes / (1024.0f * 1024.0f), 1) + "MB";
+    return String((float)bytes / (1024.0f * 1024.0f * 1024.0f), 1) + "GB";
+}
+
+String sdBasename(const char* rawName) {
+    String name = rawName ? String(rawName) : "";
+    name.replace("\\", "/");
+    const int slash = name.lastIndexOf('/');
+    if (slash >= 0) name = name.substring(slash + 1);
+    name.trim();
+    return name;
+}
+
+String sdJoinPath(const char* base, const char* name) {
+    String path = base && base[0] ? String(base) : "/";
+    if (path != "/" && path.endsWith("/")) path.remove(path.length() - 1);
+    if (path == "/") return String("/") + name;
+    return path + "/" + name;
+}
+
+void sdCopyPath(char* out, size_t outLen, const String& path) {
+    strlcpy(out, path.c_str(), outLen);
+}
+
+void sdSortEntries(uint8_t first) {
+    for (uint8_t i = first; i < sdExplorerCount; i++) {
+        for (uint8_t j = i + 1; j < sdExplorerCount; j++) {
+            const bool swapType = sdEntries[j].directory && !sdEntries[i].directory;
+            String a = sdEntries[i].name;
+            String b = sdEntries[j].name;
+            a.toLowerCase();
+            b.toLowerCase();
+            const bool swapName = sdEntries[j].directory == sdEntries[i].directory && b.compareTo(a) < 0;
+            if (swapType || swapName) {
+                SdExplorerEntry tmp = sdEntries[i];
+                sdEntries[i] = sdEntries[j];
+                sdEntries[j] = tmp;
+            }
+        }
+    }
+}
+
+bool sdLoadDirectory() {
+    sdExplorerCount = 0;
+    sdExplorerSelected = 0;
+    sdExplorerScroll = 0;
+
+    if (!beginSdCard()) {
+        setStatus("SD mount failed");
+        return false;
+    }
+
+    File dir = SD.open(sdCurrentPath);
+    if (!dir || !dir.isDirectory()) {
+        if (dir) dir.close();
+        strlcpy(sdCurrentPath, "/", sizeof(sdCurrentPath));
+        dir = SD.open("/");
+    }
+    if (!dir) {
+        setStatus("SD open dir failed");
+        return false;
+    }
+
+    if (!sdExplorerIsRoot()) {
+        strlcpy(sdEntries[sdExplorerCount].name, "..", sizeof(sdEntries[sdExplorerCount].name));
+        sdEntries[sdExplorerCount].directory = true;
+        sdEntries[sdExplorerCount].parent = true;
+        sdEntries[sdExplorerCount].size = 0;
+        sdExplorerCount++;
+    }
+
+    while (sdExplorerCount < SD_EXPLORER_MAX_ENTRIES) {
+        File entry = dir.openNextFile();
+        if (!entry) break;
+        String name = sdBasename(entry.name());
+        if (name.length() == 0 || name == "." || name == "..") {
+            entry.close();
+            continue;
+        }
+
+        SdExplorerEntry& info = sdEntries[sdExplorerCount++];
+        name.toCharArray(info.name, sizeof(info.name));
+        info.directory = entry.isDirectory();
+        info.parent = false;
+        info.size = info.directory ? 0 : (uint32_t)entry.size();
+        entry.close();
+    }
+
+    dir.close();
+    sdSortEntries(sdExplorerIsRoot() ? 0 : 1);
+    setStatus("SD explorer ready");
+    return true;
+}
+
+SdExplorerEntry* sdSelectedEntry() {
+    if (sdExplorerCount == 0 || sdExplorerSelected >= sdExplorerCount) return nullptr;
+    return &sdEntries[sdExplorerSelected];
+}
+
+bool sdSelectedPath(char* out, size_t outLen) {
+    SdExplorerEntry* entry = sdSelectedEntry();
+    if (!entry || entry->parent) return false;
+    sdCopyPath(out, outLen, sdJoinPath(sdCurrentPath, entry->name));
+    return true;
+}
+
+void sdGoParentDirectory() {
+    if (sdExplorerIsRoot()) return;
+    String path = sdCurrentPath;
+    if (path.endsWith("/") && path.length() > 1) path.remove(path.length() - 1);
+    const int slash = path.lastIndexOf('/');
+    if (slash <= 0) path = "/";
+    else path = path.substring(0, slash);
+    sdCopyPath(sdCurrentPath, sizeof(sdCurrentPath), path);
+    sdLoadDirectory();
+}
+
+void sdEnterSelectedDirectory() {
+    SdExplorerEntry* entry = sdSelectedEntry();
+    if (!entry) return;
+    if (entry->parent) {
+        sdGoParentDirectory();
+        return;
+    }
+    if (!entry->directory) return;
+    sdCopyPath(sdCurrentPath, sizeof(sdCurrentPath), sdJoinPath(sdCurrentPath, entry->name));
+    sdLoadDirectory();
+}
+
+String sdCleanName(const char* value) {
+    String input = value ? String(value) : "";
+    input.trim();
+    String out;
+    for (uint16_t i = 0; i < input.length() && out.length() < SD_EXPLORER_NAME_LEN - 1; i++) {
+        const char c = input[i];
+        if (isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.') {
+            out += c;
+        } else if (c == ' ') {
+            out += '_';
+        }
+    }
+    while (out.startsWith(".")) out.remove(0, 1);
+    while (out.endsWith(".")) out.remove(out.length() - 1);
+    if (out == "." || out == "..") out = "";
+    return out;
+}
+
+String sdGeneratedName(bool directory) {
+    char candidate[24];
+    for (uint16_t i = 1; i < 1000; i++) {
+        if (directory) snprintf(candidate, sizeof(candidate), "DIR%03u", i);
+        else snprintf(candidate, sizeof(candidate), "FILE%03u.TXT", i);
+        const String path = sdJoinPath(sdCurrentPath, candidate);
+        if (!SD.exists(path.c_str())) return String(candidate);
+    }
+    return directory ? "DIR999" : "FILE999.TXT";
+}
+
+bool sdCreateFromKeyboard() {
+    String name = sdCleanName(sdKeyboardValue);
+    if (name.length() == 0) name = sdGeneratedName(sdCreateDirectoryMode);
+    if (!sdCreateDirectoryMode && name.indexOf('.') < 0) name += ".txt";
+
+    const String path = sdJoinPath(sdCurrentPath, name.c_str());
+    if (path.length() >= SD_EXPLORER_PATH_LEN - 1) {
+        setStatus("SD path too long");
+        return false;
+    }
+    if (SD.exists(path.c_str())) {
+        setStatus("SD item already exists");
+        return false;
+    }
+
+    bool ok = false;
+    if (sdCreateDirectoryMode) {
+        ok = SD.mkdir(path.c_str());
+    } else {
+        String content;
+        content += "CYBERDECK S3\r\n";
+        content += "Archivo creado desde SD VAULT\r\n";
+        content += "Path: " + path + "\r\n";
+        content += "Uptime: " + uptimeText() + "\r\n";
+        ok = writeTextFile(path.c_str(), content);
+    }
+    setStatus(ok ? "SD item created" : "SD create failed");
+    return ok;
+}
+
+bool sdDeleteRecursive(const char* path) {
+    if (!path || strcmp(path, "/") == 0) return false;
+    File target = SD.open(path);
+    if (!target) return SD.remove(path);
+
+    if (!target.isDirectory()) {
+        target.close();
+        return SD.remove(path);
+    }
+
+    bool ok = true;
+    while (true) {
+        File child = target.openNextFile();
+        if (!child) break;
+        String childPath = child.name();
+        childPath.replace("\\", "/");
+        if (!childPath.startsWith("/")) childPath = String(path) + "/" + childPath;
+        child.close();
+        if (!sdDeleteRecursive(childPath.c_str())) ok = false;
+    }
+    target.close();
+    if (!SD.rmdir(path)) ok = false;
+    return ok;
+}
+
+void sdMoveSelection(int8_t delta) {
+    if (sdExplorerCount == 0) return;
+    if (delta > 0) {
+        sdExplorerSelected = (sdExplorerSelected + 1) % sdExplorerCount;
+    } else {
+        sdExplorerSelected = sdExplorerSelected == 0 ? sdExplorerCount - 1 : sdExplorerSelected - 1;
+    }
+
+    const uint8_t visible = 6;
+    if (sdExplorerSelected < sdExplorerScroll) sdExplorerScroll = sdExplorerSelected;
+    if (sdExplorerSelected >= sdExplorerScroll + visible) sdExplorerScroll = sdExplorerSelected - visible + 1;
+}
+
+SdExplorerAction sdActionAt(uint8_t index) {
+    SdExplorerEntry* entry = sdSelectedEntry();
+    if (!entry) {
+        static const SdExplorerAction noEntry[] = {SD_ACTION_NEW_FILE, SD_ACTION_NEW_DIR, SD_ACTION_REFRESH, SD_ACTION_CANCEL};
+        return noEntry[index % 4];
+    }
+    if (entry->parent) {
+        static const SdExplorerAction parentActions[] = {SD_ACTION_OPEN, SD_ACTION_NEW_FILE, SD_ACTION_NEW_DIR, SD_ACTION_CANCEL};
+        return parentActions[index % 4];
+    }
+    static const SdExplorerAction itemActions[] = {SD_ACTION_OPEN, SD_ACTION_DELETE, SD_ACTION_NEW_FILE, SD_ACTION_NEW_DIR, SD_ACTION_CANCEL};
+    return itemActions[index % 5];
+}
+
+uint8_t sdActionCount() {
+    SdExplorerEntry* entry = sdSelectedEntry();
+    if (!entry || entry->parent) return 4;
+    return 5;
+}
+
+String sdActionLabel(SdExplorerAction action) {
+    SdExplorerEntry* entry = sdSelectedEntry();
+    switch (action) {
+        case SD_ACTION_OPEN:
+            if (entry && entry->parent) return "SUBIR";
+            if (entry && entry->directory) return "ABRIR CARPETA";
+            return "VER ARCHIVO";
+        case SD_ACTION_DELETE: return "ELIMINAR";
+        case SD_ACTION_NEW_FILE: return "CREAR ARCHIVO";
+        case SD_ACTION_NEW_DIR: return "CREAR CARPETA";
+        case SD_ACTION_REFRESH: return "REFRESCAR";
+        default: return "CANCELAR";
+    }
+}
+
+String sdActionSubtitle(SdExplorerAction action) {
+    SdExplorerEntry* entry = sdSelectedEntry();
+    switch (action) {
+        case SD_ACTION_OPEN:
+            return entry && entry->directory ? "Entrar o subir directorio" : "Vista de texto";
+        case SD_ACTION_DELETE: return "Borrado con confirmacion";
+        case SD_ACTION_NEW_FILE: return "Nuevo TXT en carpeta actual";
+        case SD_ACTION_NEW_DIR: return "Nueva carpeta en ruta actual";
+        case SD_ACTION_REFRESH: return "Lee la carpeta de nuevo";
+        default: return "Volver al explorador";
+    }
+}
+
+void drawSdBrowser() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    String headerTag = sdReady ? sdTypeText() : "offline";
+    drawHeader("SD EXPLORER", headerTag.c_str());
+
+    if (!sdReady) {
+        frame.drawRoundRect(18, 48, 284, 118, 5, COL_RED);
+        drawText(34, 72, "No se pudo montar la microSD.", COL_RED);
+        drawText(34, 100, "Revisa energia, FAT32 y cableado.", COL_AMBER);
+        drawText(34, 128, "OK reintenta montaje.", COL_CYAN);
+        drawFooter("OK REINTENTAR  BACK HOME");
+        pushFrame();
+        return;
+    }
+
+    drawText(10, 34, fitText(String("Path: ") + sdCurrentPath, 38), COL_CYAN);
+    const int listY = 52;
+    const int rowH = 23;
+    const uint8_t visible = 6;
+    for (uint8_t row = 0; row < visible; row++) {
+        const uint8_t idx = sdExplorerScroll + row;
+        if (idx >= sdExplorerCount) break;
+        SdExplorerEntry& entry = sdEntries[idx];
+        const int y = listY + row * rowH;
+        const bool selected = idx == sdExplorerSelected;
+        const uint16_t accent = entry.parent ? COL_AMBER : (entry.directory ? COL_CYAN : COL_GREEN);
+        const uint16_t bg = selected ? accent : COL_PANEL;
+        const uint16_t fg = selected ? COL_BG : COL_TEXT;
+        frame.fillRoundRect(10, y, 300, 19, 4, bg);
+        frame.drawRoundRect(10, y, 300, 19, 4, selected ? COL_TEXT : COL_GRID);
+        drawTextOn(16, y + 1, entry.parent ? "^" : (entry.directory ? "D" : "F"), selected ? COL_BG : accent, bg, 1);
+        drawTextOn(36, y + 1, fitText(entry.name, 22), fg, bg, 1);
+        frame.setTextDatum(TR_DATUM);
+        frame.setTextColor(selected ? COL_BG : COL_MUTED, bg);
+        frame.drawString(entry.directory ? "<DIR>" : sdFormatBytes(entry.size), 304, y + 1, 2);
+        frame.setTextDatum(TL_DATUM);
+    }
+
+    if (sdExplorerCount == 0) {
+        drawText(28, 88, "Carpeta vacia.", COL_AMBER);
+        drawText(28, 112, "OK abre opciones para crear.", COL_CYAN);
+    }
+
+    drawText(12, 204, fitText(String("Status: ") + statusLine, 42), COL_MUTED);
+    drawFooter("OK OPCIONES  UP/DOWN MOVER  BACK SUBIR");
+    pushFrame();
+}
+
+void drawSdActions() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("SD OPTIONS", "acciones");
+    SdExplorerEntry* entry = sdSelectedEntry();
+    const String target = entry ? String(entry->name) : String("(carpeta vacia)");
+    drawText(10, 34, fitText(target, 38), COL_CYAN);
+
+    const uint8_t count = sdActionCount();
+    const int listY = 58;
+    for (uint8_t i = 0; i < count; i++) {
+        const SdExplorerAction action = sdActionAt(i);
+        const int y = listY + i * 30;
+        const bool selected = i == sdActionSelected;
+        const uint16_t accent = action == SD_ACTION_DELETE ? COL_RED :
+                                (action == SD_ACTION_NEW_FILE || action == SD_ACTION_NEW_DIR ? COL_GREEN : COL_CYAN);
+        const uint16_t bg = selected ? accent : COL_PANEL;
+        const uint16_t fg = selected ? COL_BG : COL_TEXT;
+        frame.fillRoundRect(14, y, 292, 25, 5, bg);
+        frame.drawRoundRect(14, y, 292, 25, 5, selected ? COL_TEXT : COL_GRID);
+        drawTextOn(24, y + 3, fitText(sdActionLabel(action), 18), fg, bg, 1);
+        drawTextOn(150, y + 3, fitText(sdActionSubtitle(action), 20), selected ? COL_BG : COL_MUTED, bg, 1);
+    }
+
+    drawFooter("OK EJECUTAR  BACK LISTA");
+    pushFrame();
+}
+
+void sdKeyboardReset(bool directoryMode) {
+    sdCreateDirectoryMode = directoryMode;
+    sdKeyboardIndex = 10;
+    sdKeyboardValue[0] = '\0';
+}
+
+char sdKeyboardCharAt(uint8_t index) {
+    if (index >= 40) return 0;
+    const uint8_t row = index / 10;
+    const uint8_t col = index % 10;
+    return SD_KB_ROWS[row][col];
+}
+
+void drawSdKeyboardKey(uint8_t index, bool selected) {
+    const int keyW = 28;
+    const int keyH = 22;
+    const int gap = 2;
+    if (index < 40) {
+        const uint8_t row = index / 10;
+        const uint8_t col = index % 10;
+        const int x = 10 + col * (keyW + gap);
+        const int y = 96 + row * (keyH + gap);
+        const uint16_t bg = selected ? COL_AMBER : COL_BG;
+        const uint16_t fg = selected ? COL_BG : COL_CYAN;
+        frame.fillRect(x, y, keyW, keyH, bg);
+        frame.drawRect(x, y, keyW, keyH, selected ? COL_AMBER : COL_GRID);
+        frame.setTextDatum(MC_DATUM);
+        frame.setTextColor(fg, bg);
+        frame.setTextSize(1);
+        frame.drawString(String(sdKeyboardCharAt(index)), x + keyW / 2, y + keyH / 2 - 1, 2);
+        frame.setTextDatum(TL_DATUM);
+        return;
+    }
+
+    const uint8_t special = index - 40;
+    const int startCol = special * 2;
+    const int x = 10 + startCol * (keyW + gap);
+    const int y = 96 + 4 * (keyH + gap);
+    const int w = keyW * 2 + gap;
+    const uint16_t accent = special == 2 ? COL_GREEN : (special == 3 ? COL_RED : COL_CYAN);
+    const uint16_t bg = selected ? accent : COL_BG;
+    const uint16_t fg = selected ? COL_BG : accent;
+    frame.fillRect(x, y, w, keyH + 2, bg);
+    frame.drawRect(x, y, w, keyH + 2, accent);
+    frame.setTextDatum(MC_DATUM);
+    frame.setTextColor(fg, bg);
+    frame.setTextSize(1);
+    frame.drawString(SD_KB_SPECIAL[special], x + w / 2, y + (keyH + 2) / 2, 1);
+    frame.setTextDatum(TL_DATUM);
+}
+
+void drawSdKeyboard() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader(sdCreateDirectoryMode ? "NUEVA CARPETA" : "NUEVO ARCHIVO", "nombre");
+    drawText(10, 34, fitText(String("En: ") + sdCurrentPath, 38), COL_CYAN);
+    frame.fillRect(10, 54, 300, 34, COL_BG);
+    frame.drawRect(10, 54, 300, 34, COL_AMBER);
+    String text = sdKeyboardValue;
+    if ((millis() / 500) % 2 == 0) text += "_";
+    if (text.length() > 28) text = text.substring(text.length() - 28);
+    drawTextOn(16, 63, text.length() ? text : "_", COL_TEXT, COL_BG, 1);
+    frame.setTextDatum(TR_DATUM);
+    frame.setTextColor(COL_MUTED, COL_BG);
+    frame.setTextSize(1);
+    frame.drawString(String(strlen(sdKeyboardValue)) + "/" + String(SD_EXPLORER_NAME_LEN - 1), 304, 76, 1);
+    frame.setTextDatum(TL_DATUM);
+
+    for (uint8_t i = 0; i < 45; i++) drawSdKeyboardKey(i, i == sdKeyboardIndex);
+    drawText(12, 206, fitText(String("Status: ") + statusLine, 42), COL_MUTED);
+    drawFooter("UP/DOWN TECLA  OK SELECT  BACK BORRA");
+    pushFrame();
+}
+
+int sdExecuteKeyboardKey() {
+    if (sdKeyboardIndex < 40) {
+        const char c = sdKeyboardCharAt(sdKeyboardIndex);
+        const size_t len = strlen(sdKeyboardValue);
+        if (c && len < sizeof(sdKeyboardValue) - 1) {
+            sdKeyboardValue[len] = c;
+            sdKeyboardValue[len + 1] = '\0';
+            toneClick(2500, 10);
+        }
+        return 0;
+    }
+
+    switch (sdKeyboardIndex - 40) {
+        case 0: {
+            const size_t len = strlen(sdKeyboardValue);
+            if (len > 0) sdKeyboardValue[len - 1] = '\0';
+            toneClick(1200, 10);
+            return 0;
+        }
+        case 1:
+            sdKeyboardValue[0] = '\0';
+            toneClick(1000, 18);
+            return 0;
+        case 2:
+            toneClick(3200, 18);
+            return 1;
+        case 3:
+            toneClick(1200, 35);
+            return 2;
+        case 4: {
+            const String autoName = sdGeneratedName(sdCreateDirectoryMode);
+            strlcpy(sdKeyboardValue, autoName.c_str(), sizeof(sdKeyboardValue));
+            toneClick(2400, 12);
+            return 0;
+        }
+    }
+    return 0;
+}
+
+void sdOpenViewer() {
+    if (!sdSelectedPath(sdViewerPath, sizeof(sdViewerPath))) return;
+    sdViewerText = readTextFile(sdViewerPath, SD_VIEW_MAX_TEXT);
+    if (sdViewerText.length() == 0) sdViewerText = "(archivo vacio o no legible)";
+    sdTextScroll = 0;
+    setStatus("SD file opened");
+}
+
+uint16_t sdViewerLineCount() {
+    uint16_t count = 1;
+    for (uint16_t i = 0; i < sdViewerText.length(); i++) {
+        if (sdViewerText[i] == '\n') count++;
+    }
+    return count;
+}
+
+void drawSdViewer() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("SD VIEWER", "texto");
+    drawText(10, 34, fitText(sdBasename(sdViewerPath), 38), COL_CYAN);
+    frame.drawRect(10, 52, 300, 142, COL_GRID);
+
+    int start = 0;
+    uint16_t line = 0;
+    while (line < sdTextScroll && start < (int)sdViewerText.length()) {
+        int next = sdViewerText.indexOf('\n', start);
+        if (next < 0) {
+            start = sdViewerText.length();
+            break;
+        }
+        start = next + 1;
+        line++;
+    }
+
+    for (uint8_t row = 0; row < 8; row++) {
+        if (start > (int)sdViewerText.length()) break;
+        int next = sdViewerText.indexOf('\n', start);
+        if (next < 0) next = sdViewerText.length();
+        String lineText = sdViewerText.substring(start, next);
+        lineText.replace("\r", "");
+        drawText(16, 58 + row * 16, fitText(lineText, 36), row == 0 ? COL_TEXT : COL_MUTED);
+        start = next + 1;
+        if (next >= (int)sdViewerText.length()) break;
+    }
+
+    drawText(12, 204, String("Linea ") + (sdTextScroll + 1) + "/" + sdViewerLineCount(), COL_MUTED);
+    drawFooter("UP/DOWN SCROLL  BACK LISTA");
+    pushFrame();
+}
+
+void drawSdConfirmDelete() {
+    char path[SD_EXPLORER_PATH_LEN] = "";
+    sdSelectedPath(path, sizeof(path));
+    SdExplorerEntry* entry = sdSelectedEntry();
+
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("ELIMINAR SD", entry && entry->directory ? "carpeta" : "archivo");
+    frame.drawRoundRect(18, 44, 284, 100, 5, COL_RED);
+    drawText(34, 64, "Esta accion borra de la microSD.", COL_RED);
+    drawText(34, 90, fitText(sdBasename(path), 30), COL_TEXT);
+    drawText(34, 116, entry && entry->directory ? "Carpetas se borran con contenido." : "Archivo seleccionado.", COL_AMBER);
+
+    frame.fillRoundRect(44, 164, 100, 30, 5, sdConfirmDeleteYes ? COL_RED : COL_PANEL);
+    frame.drawRoundRect(44, 164, 100, 30, 5, sdConfirmDeleteYes ? COL_TEXT : COL_GRID);
+    drawTextOn(75, 171, "SI", sdConfirmDeleteYes ? COL_BG : COL_RED, sdConfirmDeleteYes ? COL_RED : COL_PANEL, 1);
+
+    frame.fillRoundRect(176, 164, 100, 30, 5, !sdConfirmDeleteYes ? COL_GREEN : COL_PANEL);
+    frame.drawRoundRect(176, 164, 100, 30, 5, !sdConfirmDeleteYes ? COL_TEXT : COL_GRID);
+    drawTextOn(204, 171, "NO", !sdConfirmDeleteYes ? COL_BG : COL_GREEN, !sdConfirmDeleteYes ? COL_GREEN : COL_PANEL, 1);
+
+    drawFooter("UP/DOWN CAMBIA  OK CONFIRMA  BACK");
+    pushFrame();
+}
+
+void runSdFileManagerApp() {
+    currentScreen = Screen::SdVault;
+    SdExplorerMode mode = SdExplorerMode::Browser;
+    sdTried = false;
+    sdReady = false;
+    sdLoadDirectory();
+    drawSdBrowser();
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::LongSelect) {
+            currentScreen = Screen::Home;
+            setStatus("Ready");
+            drawHome();
+            pushFrame();
+            return;
+        }
+
+        if (mode == SdExplorerMode::Browser) {
+            if (!sdReady) {
+                if (action == AppAction::Back) break;
+                if (action == AppAction::Select) {
+                    sdTried = false;
+                    sdReady = false;
+                    sdLoadDirectory();
+                    drawSdBrowser();
+                }
+                delay(4);
+                continue;
+            }
+
+            if (action == AppAction::Back) {
+                if (sdExplorerIsRoot()) break;
+                sdGoParentDirectory();
+                drawSdBrowser();
+            } else if (action == AppAction::Up) {
+                sdMoveSelection(-1);
+                toneClick();
+                drawSdBrowser();
+            } else if (action == AppAction::Down) {
+                sdMoveSelection(1);
+                toneClick();
+                drawSdBrowser();
+            } else if (action == AppAction::Select) {
+                sdActionSelected = 0;
+                mode = SdExplorerMode::Actions;
+                toneClick(3000, 12);
+                drawSdActions();
+            } else {
+                delay(4);
+            }
+            continue;
+        }
+
+        if (mode == SdExplorerMode::Actions) {
+            const uint8_t count = sdActionCount();
+            if (action == AppAction::Back) {
+                mode = SdExplorerMode::Browser;
+                drawSdBrowser();
+            } else if (action == AppAction::Up) {
+                sdActionSelected = sdActionSelected == 0 ? count - 1 : sdActionSelected - 1;
+                toneClick();
+                drawSdActions();
+            } else if (action == AppAction::Down) {
+                sdActionSelected = (sdActionSelected + 1) % count;
+                toneClick();
+                drawSdActions();
+            } else if (action == AppAction::Select) {
+                const SdExplorerAction selectedAction = sdActionAt(sdActionSelected);
+                if (selectedAction == SD_ACTION_OPEN) {
+                    SdExplorerEntry* entry = sdSelectedEntry();
+                    if (entry && entry->directory) {
+                        sdEnterSelectedDirectory();
+                        mode = SdExplorerMode::Browser;
+                        drawSdBrowser();
+                    } else if (entry) {
+                        sdOpenViewer();
+                        mode = SdExplorerMode::Viewer;
+                        drawSdViewer();
+                    }
+                } else if (selectedAction == SD_ACTION_DELETE) {
+                    sdConfirmDeleteYes = false;
+                    mode = SdExplorerMode::ConfirmDelete;
+                    drawSdConfirmDelete();
+                } else if (selectedAction == SD_ACTION_NEW_FILE || selectedAction == SD_ACTION_NEW_DIR) {
+                    sdKeyboardReset(selectedAction == SD_ACTION_NEW_DIR);
+                    mode = SdExplorerMode::Keyboard;
+                    drawSdKeyboard();
+                } else if (selectedAction == SD_ACTION_REFRESH) {
+                    sdLoadDirectory();
+                    mode = SdExplorerMode::Browser;
+                    drawSdBrowser();
+                } else {
+                    mode = SdExplorerMode::Browser;
+                    drawSdBrowser();
+                }
+            } else {
+                delay(4);
+            }
+            continue;
+        }
+
+        if (mode == SdExplorerMode::Keyboard) {
+            if (action == AppAction::Back) {
+                const size_t len = strlen(sdKeyboardValue);
+                if (len > 0) {
+                    sdKeyboardValue[len - 1] = '\0';
+                    toneClick(1200, 10);
+                    drawSdKeyboard();
+                } else {
+                    mode = SdExplorerMode::Actions;
+                    drawSdActions();
+                }
+            } else if (action == AppAction::Up) {
+                sdKeyboardIndex = sdKeyboardIndex == 0 ? 44 : sdKeyboardIndex - 1;
+                toneClick();
+                drawSdKeyboard();
+            } else if (action == AppAction::Down) {
+                sdKeyboardIndex = (sdKeyboardIndex + 1) % 45;
+                toneClick();
+                drawSdKeyboard();
+            } else if (action == AppAction::Select) {
+                const int result = sdExecuteKeyboardKey();
+                if (result == 1) {
+                    if (sdCreateFromKeyboard()) {
+                        sdLoadDirectory();
+                        mode = SdExplorerMode::Browser;
+                        drawSdBrowser();
+                    } else {
+                        drawSdKeyboard();
+                    }
+                } else if (result == 2) {
+                    mode = SdExplorerMode::Actions;
+                    drawSdActions();
+                } else {
+                    drawSdKeyboard();
+                }
+            } else {
+                delay(4);
+            }
+            continue;
+        }
+
+        if (mode == SdExplorerMode::ConfirmDelete) {
+            if (action == AppAction::Back) {
+                mode = SdExplorerMode::Actions;
+                drawSdActions();
+            } else if (action == AppAction::Up || action == AppAction::Down) {
+                sdConfirmDeleteYes = !sdConfirmDeleteYes;
+                toneClick();
+                drawSdConfirmDelete();
+            } else if (action == AppAction::Select) {
+                if (sdConfirmDeleteYes) {
+                    char path[SD_EXPLORER_PATH_LEN] = "";
+                    const bool hasPath = sdSelectedPath(path, sizeof(path));
+                    const bool ok = hasPath && sdDeleteRecursive(path);
+                    setStatus(ok ? "SD item deleted" : "SD delete failed");
+                    sdLoadDirectory();
+                }
+                mode = SdExplorerMode::Browser;
+                drawSdBrowser();
+            } else {
+                delay(4);
+            }
+            continue;
+        }
+
+        if (mode == SdExplorerMode::Viewer) {
+            if (action == AppAction::Back) {
+                sdViewerText = "";
+                mode = SdExplorerMode::Browser;
+                drawSdBrowser();
+            } else if (action == AppAction::Up) {
+                if (sdTextScroll > 0) sdTextScroll--;
+                toneClick();
+                drawSdViewer();
+            } else if (action == AppAction::Down) {
+                const uint16_t lines = sdViewerLineCount();
+                if (sdTextScroll + 1 < lines) sdTextScroll++;
+                toneClick();
+                drawSdViewer();
+            } else {
+                delay(4);
+            }
+            continue;
+        }
+    }
+
+    currentScreen = Screen::Home;
+    setStatus("Ready");
+    drawHome();
+    pushFrame();
 }
 
 void drawRadioScope() {
@@ -4570,6 +5357,10 @@ void handleAction(AppAction action) {
                 toneClick(3200, 18);
                 runCyberDemoLauncherApp();
                 return;
+            } else if (MENU[menuIndex].screen == Screen::SdVault) {
+                toneClick(3200, 18);
+                runSdFileManagerApp();
+                return;
             } else if (MENU[menuIndex].screen == Screen::RadioScope) {
                 toneClick(3200, 18);
                 runRadioScopeApp();
@@ -4600,13 +5391,6 @@ void handleAction(AppAction action) {
 
     if (currentScreen == Screen::GpsRadar && action == AppAction::Select) {
         saveGpsSnapshot();
-        toneClick(3000, 18);
-        renderCurrent();
-        return;
-    }
-
-    if (currentScreen == Screen::SdVault && action == AppAction::Select) {
-        ensureSdFolders();
         toneClick(3000, 18);
         renderCurrent();
         return;
