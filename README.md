@@ -417,13 +417,23 @@ Librerias principales:
 pio run
 ```
 
-## Subir al ESP32-S3
+## Subir con PlatformIO
 
 ```powershell
 pio run -t upload
 ```
 
-## Binarios incluidos
+## Metodos de flasheo
+
+### Web flasher
+
+Metodo recomendado para usuarios finales:
+
+[https://pepeangell5.github.io/IPHONE-CONTROL-ESP32/flasher/](https://pepeangell5.github.io/IPHONE-CONTROL-ESP32/flasher/)
+
+Usa Chrome o Edge, conecta el ESP32-S3 por USB, presiona `Install`, selecciona el puerto serial y espera a que termine. La pagina usa `binarios/CYBERDECK-S3-APPS-full.bin`.
+
+### Binarios incluidos
 
 La carpeta `binarios/` contiene:
 
@@ -433,13 +443,13 @@ La carpeta `binarios/` contiene:
 - `partitions.bin`: tabla de particiones para `0x8000`.
 - `boot_app0.bin`: binario OTA auxiliar para `0xE000`.
 
-Flasheo manual con archivos separados:
+### Flasheo manual con archivos separados
 
 ```powershell
 esptool.py --chip esp32s3 --baud 460800 write_flash -z 0x0 binarios/bootloader.bin 0x8000 binarios/partitions.bin 0xE000 binarios/boot_app0.bin 0x10000 binarios/firmware.bin
 ```
 
-Flasheo manual con binario combinado:
+### Flasheo manual con binario combinado
 
 ```powershell
 esptool.py --chip esp32s3 --baud 460800 write_flash -z 0x0 binarios/CYBERDECK-S3-APPS-full.bin
