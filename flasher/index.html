@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CYBERDECK S3 APPS Web Flasher</title>
+  <meta name="description" content="Instalador web para CYBERDECK S3 APPS en ESP32-S3.">
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #020403;
+      --panel: #06110c;
+      --panel2: #091b12;
+      --green: #00ff78;
+      --cyan: #31d7ff;
+      --amber: #ffd24a;
+      --red: #ff3355;
+      --text: #ecfff5;
+      --muted: #8ebaa4;
+      --line: rgba(0, 255, 120, 0.28);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background:
+        linear-gradient(rgba(0, 255, 120, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 255, 120, 0.05) 1px, transparent 1px),
+        radial-gradient(circle at 50% -10%, rgba(0, 255, 120, 0.18), transparent 38%),
+        var(--bg);
+      background-size: 24px 24px, 24px 24px, auto, auto;
+      color: var(--text);
+    }
+
+    main {
+      width: min(980px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 34px 0 42px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 22px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .brand {
+      color: var(--green);
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .hero {
+      border: 1px solid var(--line);
+      background: linear-gradient(135deg, rgba(0, 255, 120, 0.12), rgba(49, 215, 255, 0.06)), var(--panel);
+      border-radius: 8px;
+      padding: 28px;
+      box-shadow: 0 0 34px rgba(0, 255, 120, 0.10);
+    }
+
+    h1 {
+      margin: 0;
+      color: var(--green);
+      font-size: clamp(32px, 7vw, 72px);
+      line-height: 0.95;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      max-width: 720px;
+      margin: 18px 0 0;
+      color: var(--text);
+      font-size: 18px;
+      line-height: 1.5;
+    }
+
+    .lang {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 22px 0;
+    }
+
+    .lang button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel2);
+      color: var(--text);
+      padding: 10px 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .lang button.active {
+      background: var(--green);
+      color: #001407;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(3, 12, 8, 0.86);
+      padding: 20px;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      color: var(--cyan);
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+
+    ol, ul {
+      margin: 0;
+      padding-left: 20px;
+      color: var(--text);
+      line-height: 1.65;
+    }
+
+    code {
+      color: var(--amber);
+    }
+
+    .install {
+      display: grid;
+      place-items: center;
+      min-height: 132px;
+      border: 1px dashed var(--green);
+      border-radius: 8px;
+      background: rgba(0, 255, 120, 0.06);
+      margin: 18px 0;
+      padding: 22px;
+    }
+
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .links a {
+      color: #001407;
+      background: var(--green);
+      border-radius: 6px;
+      padding: 10px 12px;
+      text-decoration: none;
+      font-weight: 800;
+    }
+
+    .warning {
+      color: var(--amber);
+      border-left: 3px solid var(--amber);
+      padding-left: 12px;
+      margin-top: 14px;
+      line-height: 1.5;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    @media (max-width: 760px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        padding: 20px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div class="brand">CYBERDECK S3 APPS</div>
+      <div>ESP32-S3 | ST7789 | GPS | SD | HID | BLE</div>
+    </div>
+
+    <section class="hero">
+      <h1>WEB FLASHER</h1>
+      <p class="subtitle" data-es="Instala el firmware final del CYBERDECK S3 APPS desde Chrome o Edge usando Web Serial." data-en="Install the final CYBERDECK S3 APPS firmware from Chrome or Edge using Web Serial."></p>
+      <div class="lang">
+        <button class="active" type="button" data-lang="es">Espanol</button>
+        <button type="button" data-lang="en">English</button>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2 data-es="Instalar firmware" data-en="Install firmware"></h2>
+        <div class="install">
+          <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+        </div>
+        <p class="warning" data-es="Conecta el ESP32-S3 por USB, presiona instalar, elige el puerto serial y espera a que termine. Si no conecta, mantén BOOT al iniciar la conexion." data-en="Connect the ESP32-S3 by USB, press install, choose the serial port, and wait until it finishes. If it does not connect, hold BOOT while starting the connection."></p>
+      </div>
+
+      <div class="card">
+        <h2 data-es="Pasos rapidos" data-en="Quick steps"></h2>
+        <ol>
+          <li data-es="Usa Chrome o Edge en PC." data-en="Use Chrome or Edge on PC."></li>
+          <li data-es="Conecta tu CYBERDECK por USB." data-en="Connect your CYBERDECK by USB."></li>
+          <li data-es="Pulsa Install y selecciona el puerto." data-en="Press Install and select the port."></li>
+          <li data-es="Reinicia el ESP32-S3 al terminar." data-en="Restart the ESP32-S3 when finished."></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:18px">
+      <h2 data-es="Archivos incluidos" data-en="Included files"></h2>
+      <ul>
+        <li><code>binarios/CYBERDECK-S3-APPS-full.bin</code></li>
+        <li><code>binarios/firmware.bin</code></li>
+        <li><code>binarios/bootloader.bin</code></li>
+        <li><code>binarios/partitions.bin</code></li>
+        <li><code>binarios/boot_app0.bin</code></li>
+      </ul>
+      <div class="links">
+        <a href="../binarios/CYBERDECK-S3-APPS-full.bin" download data-es="Descargar BIN final" data-en="Download final BIN"></a>
+        <a href="https://github.com/pepeangell5/IPHONE-CONTROL-ESP32" data-es="Repositorio GitHub" data-en="GitHub repository"></a>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const state = { lang: "es" };
+
+    function applyLang(lang) {
+      state.lang = lang;
+      document.documentElement.lang = lang;
+      document.querySelectorAll("[data-es]").forEach((node) => {
+        node.textContent = node.dataset[lang];
+      });
+      document.querySelectorAll(".lang button").forEach((button) => {
+        button.classList.toggle("active", button.dataset.lang === lang);
+      });
+    }
+
+    document.querySelectorAll(".lang button").forEach((button) => {
+      button.addEventListener("click", () => applyLang(button.dataset.lang));
+    });
+
+    applyLang("es");
+  </script>
+</body>
+</html>

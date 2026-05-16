@@ -96,6 +96,13 @@ constexpr uint8_t SD_EXPLORER_MAX_ENTRIES = 64;
 constexpr uint8_t SD_EXPLORER_NAME_LEN = 44;
 constexpr uint16_t SD_EXPLORER_PATH_LEN = 192;
 constexpr uint16_t SD_VIEW_MAX_TEXT = 2600;
+constexpr uint8_t QR_VERSION = 4;
+constexpr uint8_t QR_SIZE = 21 + 4 * (QR_VERSION - 1);
+constexpr uint8_t QR_DATA_CODEWORDS = 80;
+constexpr uint8_t QR_ECC_CODEWORDS = 20;
+constexpr uint8_t QR_TOTAL_CODEWORDS = QR_DATA_CODEWORDS + QR_ECC_CODEWORDS;
+constexpr uint8_t QR_TEXT_MAX_LEN = 78;
+constexpr uint8_t QR_KEY_COUNT = 45;
 
 enum class Screen : uint8_t {
     Home,
@@ -107,6 +114,7 @@ enum class Screen : uint8_t {
     GpsSos,
     DemoLauncher,
     SdVault,
+    QrText,
     RadioScope,
     PasscodeSim,
     HidDemo,
@@ -130,12 +138,13 @@ const MenuEntry MENU[] = {
     {"GPS SOS MODE", "Coordenadas grandes para emergencia", Screen::GpsSos},
     {"CYBER DEMO", "Launcher rapido para reels", Screen::DemoLauncher},
     {"SD VAULT", "Explorador microSD completo", Screen::SdVault},
+    {"QR TEXT", "Generador QR de texto", Screen::QrText},
     {"RADIO SCOPE", "Escaneo pasivo 2.4 GHz", Screen::RadioScope},
     {"PASSCODE SIM", "Demo visual de PIN", Screen::PasscodeSim},
     {"HID PAD", "Apps, terminal y multimedia", Screen::HidDemo},
     {"IPHONE REMOTE", "BLE app launcher y multimedia", Screen::IphoneRemote},
     {"BATTERY METER", "Voltaje y porcentaje Li-ion", Screen::Battery},
-    {"ABOUT TEMPLATE", "Pines, controles y version", Screen::About},
+    {"ABOUT", "Redes, creditos y mascota", Screen::About},
 };
 
 struct GpsPlace {
@@ -282,6 +291,41 @@ char sdCurrentPath[SD_EXPLORER_PATH_LEN] = "/";
 char sdKeyboardValue[SD_EXPLORER_NAME_LEN] = "";
 char sdViewerPath[SD_EXPLORER_PATH_LEN] = "";
 String sdViewerText;
+uint8_t qrKeyboardIndex = 10;
+bool qrKeyboardShift = false;
+bool qrGenerated = false;
+char qrTextValue[QR_TEXT_MAX_LEN + 1] = "";
+uint8_t qrModules[QR_SIZE][QR_SIZE] = {};
+bool qrReserved[QR_SIZE][QR_SIZE] = {};
+
+const char* QR_KB_ROWS_LOWER[] = {
+    "1234567890",
+    "qwertyuiop",
+    "asdfghjkl-",
+    "zxcvbnm:/."
+};
+
+const char* QR_KB_ROWS_UPPER[] = {
+    "!@#$%&*()?",
+    "QWERTYUIOP",
+    "ASDFGHJKL_",
+    "ZXCVBNM:/."
+};
+
+const char* QR_KB_SPECIAL[] = {"DEL", "SPC", "OK", "X", "SHIFT"};
+
+const uint8_t QR_KB_NAV_ORDER[QR_KEY_COUNT] = {
+    0, 10, 20, 30, 40,
+    1, 11, 21, 31,
+    2, 12, 22, 32, 41,
+    3, 13, 23, 33,
+    4, 14, 24, 34, 42,
+    5, 15, 25, 35,
+    6, 16, 26, 36, 43,
+    7, 17, 27, 37,
+    8, 18, 28, 38, 44,
+    9, 19, 29, 39
+};
 
 class BleRemoteServerCallbacks : public BLEServerCallbacks {
 public:
@@ -2178,6 +2222,431 @@ void runSdFileManagerApp() {
                 delay(4);
             }
             continue;
+        }
+    }
+
+    currentScreen = Screen::Home;
+    setStatus("Ready");
+    drawHome();
+    pushFrame();
+}
+
+void qrClearMatrix() {
+    memset(qrModules, 0, sizeof(qrModules));
+    memset(qrReserved, 0, sizeof(qrReserved));
+}
+
+void qrSetFunction(int row, int col, bool dark) {
+    if (row < 0 || col < 0 || row >= QR_SIZE || col >= QR_SIZE) return;
+    qrModules[row][col] = dark ? 1 : 0;
+    qrReserved[row][col] = true;
+}
+
+void qrDrawFinder(int row, int col) {
+    for (int dy = -1; dy <= 7; dy++) {
+        for (int dx = -1; dx <= 7; dx++) {
+            const int r = row + dy;
+            const int c = col + dx;
+            if (r < 0 || c < 0 || r >= QR_SIZE || c >= QR_SIZE) continue;
+            const bool inside = dx >= 0 && dx <= 6 && dy >= 0 && dy <= 6;
+            const bool dark = inside && (dx == 0 || dx == 6 || dy == 0 || dy == 6 ||
+                                         (dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4));
+            qrSetFunction(r, c, dark);
+        }
+    }
+}
+
+void qrDrawAlignment(int centerRow, int centerCol) {
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            const bool dark = max(abs(dx), abs(dy)) == 2 || (dx == 0 && dy == 0);
+            qrSetFunction(centerRow + dy, centerCol + dx, dark);
+        }
+    }
+}
+
+void qrReserveFormatAreas() {
+    for (uint8_t i = 0; i <= 8; i++) {
+        if (i == 6) continue;
+        qrReserved[8][i] = true;
+        qrReserved[i][8] = true;
+    }
+    for (uint8_t i = QR_SIZE - 8; i < QR_SIZE; i++) qrReserved[8][i] = true;
+    for (uint8_t i = QR_SIZE - 7; i < QR_SIZE; i++) qrReserved[i][8] = true;
+    qrSetFunction(QR_SIZE - 8, 8, true);
+}
+
+void qrDrawFunctionPatterns() {
+    qrDrawFinder(0, 0);
+    qrDrawFinder(0, QR_SIZE - 7);
+    qrDrawFinder(QR_SIZE - 7, 0);
+
+    for (uint8_t i = 8; i < QR_SIZE - 8; i++) {
+        const bool dark = (i % 2) == 0;
+        qrSetFunction(6, i, dark);
+        qrSetFunction(i, 6, dark);
+    }
+
+    qrDrawAlignment(QR_SIZE - 7, QR_SIZE - 7);
+    qrReserveFormatAreas();
+}
+
+uint8_t qrGfMul(uint8_t x, uint8_t y) {
+    uint8_t z = 0;
+    for (uint8_t i = 0; i < 8; i++) {
+        if (y & 1) z ^= x;
+        const bool carry = x & 0x80;
+        x <<= 1;
+        if (carry) x ^= 0x1D;
+        y >>= 1;
+    }
+    return z;
+}
+
+void qrComputeDivisor(uint8_t degree, uint8_t* result) {
+    memset(result, 0, degree);
+    result[degree - 1] = 1;
+    uint8_t root = 1;
+    for (uint8_t i = 0; i < degree; i++) {
+        for (uint8_t j = 0; j < degree; j++) {
+            result[j] = qrGfMul(result[j], root);
+            if (j + 1 < degree) result[j] ^= result[j + 1];
+        }
+        root = qrGfMul(root, 0x02);
+    }
+}
+
+void qrComputeEcc(const uint8_t* data, uint8_t dataLen, uint8_t* ecc) {
+    uint8_t divisor[QR_ECC_CODEWORDS] = {};
+    qrComputeDivisor(QR_ECC_CODEWORDS, divisor);
+    memset(ecc, 0, QR_ECC_CODEWORDS);
+
+    for (uint8_t i = 0; i < dataLen; i++) {
+        const uint8_t factor = data[i] ^ ecc[0];
+        for (uint8_t j = 0; j < QR_ECC_CODEWORDS - 1; j++) ecc[j] = ecc[j + 1];
+        ecc[QR_ECC_CODEWORDS - 1] = 0;
+        for (uint8_t j = 0; j < QR_ECC_CODEWORDS; j++) {
+            ecc[j] ^= qrGfMul(divisor[j], factor);
+        }
+    }
+}
+
+void qrAppendBits(uint32_t value, uint8_t len, uint8_t* out, uint16_t& bitLen) {
+    for (int8_t i = len - 1; i >= 0; i--) {
+        if ((value >> i) & 1) out[bitLen >> 3] |= 1 << (7 - (bitLen & 7));
+        bitLen++;
+    }
+}
+
+void qrBuildTextCodewords(const char* text, uint8_t* data) {
+    memset(data, 0, QR_DATA_CODEWORDS);
+    uint16_t bitLen = 0;
+    uint8_t bytes = strlen(text);
+    if (bytes > QR_TEXT_MAX_LEN) bytes = QR_TEXT_MAX_LEN;
+
+    qrAppendBits(0x04, 4, data, bitLen);
+    qrAppendBits(bytes, 8, data, bitLen);
+    for (uint8_t i = 0; i < bytes; i++) qrAppendBits((uint8_t)text[i], 8, data, bitLen);
+
+    const uint16_t capacityBits = QR_DATA_CODEWORDS * 8;
+    const uint8_t terminator = (capacityBits - bitLen) < 4 ? (capacityBits - bitLen) : 4;
+    qrAppendBits(0, terminator, data, bitLen);
+    while ((bitLen & 7) != 0) qrAppendBits(0, 1, data, bitLen);
+
+    bool firstPad = true;
+    while ((bitLen >> 3) < QR_DATA_CODEWORDS) {
+        qrAppendBits(firstPad ? 0xEC : 0x11, 8, data, bitLen);
+        firstPad = !firstPad;
+    }
+}
+
+uint16_t qrFormatBits(uint8_t mask) {
+    const uint16_t data = (1 << 3) | (mask & 0x07);
+    uint16_t rem = data << 10;
+    for (int8_t i = 14; i >= 10; i--) {
+        if ((rem >> i) & 1) rem ^= 0x537 << (i - 10);
+    }
+    return ((data << 10) | (rem & 0x03FF)) ^ 0x5412;
+}
+
+void qrSetFormatModule(int row, int col, bool dark) {
+    if (row < 0 || col < 0 || row >= QR_SIZE || col >= QR_SIZE) return;
+    qrModules[row][col] = dark ? 1 : 0;
+    qrReserved[row][col] = true;
+}
+
+void qrDrawFormatBits(uint8_t mask) {
+    const uint16_t bits = qrFormatBits(mask);
+    for (uint8_t i = 0; i <= 5; i++) qrSetFormatModule(i, 8, (bits >> i) & 1);
+    qrSetFormatModule(7, 8, (bits >> 6) & 1);
+    qrSetFormatModule(8, 8, (bits >> 7) & 1);
+    qrSetFormatModule(8, 7, (bits >> 8) & 1);
+    for (uint8_t i = 9; i < 15; i++) qrSetFormatModule(8, 14 - i, (bits >> i) & 1);
+    for (uint8_t i = 0; i < 8; i++) qrSetFormatModule(8, QR_SIZE - 1 - i, (bits >> i) & 1);
+    for (uint8_t i = 8; i < 15; i++) qrSetFormatModule(QR_SIZE - 15 + i, 8, (bits >> i) & 1);
+    qrSetFunction(QR_SIZE - 8, 8, true);
+}
+
+void qrPlaceData(const uint8_t* codewords, uint8_t count) {
+    uint16_t bitIndex = 0;
+    bool upward = true;
+    for (int col = QR_SIZE - 1; col > 0; col -= 2) {
+        if (col == 6) col--;
+        for (uint8_t i = 0; i < QR_SIZE; i++) {
+            const int row = upward ? (QR_SIZE - 1 - i) : i;
+            for (uint8_t j = 0; j < 2; j++) {
+                const int c = col - j;
+                if (qrReserved[row][c]) continue;
+                bool bit = false;
+                if (bitIndex < count * 8) bit = (codewords[bitIndex >> 3] >> (7 - (bitIndex & 7))) & 1;
+                if (((row + c) & 1) == 0) bit = !bit;
+                qrModules[row][c] = bit ? 1 : 0;
+                bitIndex++;
+            }
+        }
+        upward = !upward;
+    }
+}
+
+bool qrGenerateText(const char* text) {
+    if (!text || text[0] == '\0') return false;
+    uint8_t data[QR_DATA_CODEWORDS] = {};
+    uint8_t ecc[QR_ECC_CODEWORDS] = {};
+    uint8_t all[QR_TOTAL_CODEWORDS] = {};
+
+    qrClearMatrix();
+    qrDrawFunctionPatterns();
+    qrBuildTextCodewords(text, data);
+    qrComputeEcc(data, QR_DATA_CODEWORDS, ecc);
+    memcpy(all, data, QR_DATA_CODEWORDS);
+    memcpy(all + QR_DATA_CODEWORDS, ecc, QR_ECC_CODEWORDS);
+    qrPlaceData(all, QR_TOTAL_CODEWORDS);
+    qrDrawFormatBits(0);
+    return true;
+}
+
+char qrKeyboardCharAt(uint8_t index) {
+    if (index >= 40) return 0;
+    const uint8_t row = index / 10;
+    const uint8_t col = index % 10;
+    return qrKeyboardShift ? QR_KB_ROWS_UPPER[row][col] : QR_KB_ROWS_LOWER[row][col];
+}
+
+void qrMoveKeyboard(int8_t dir) {
+    uint8_t navPos = 0;
+    for (uint8_t i = 0; i < QR_KEY_COUNT; i++) {
+        if (QR_KB_NAV_ORDER[i] == qrKeyboardIndex) {
+            navPos = i;
+            break;
+        }
+    }
+
+    if (dir < 0) navPos = navPos == 0 ? QR_KEY_COUNT - 1 : navPos - 1;
+    else navPos = (navPos + 1) % QR_KEY_COUNT;
+    qrKeyboardIndex = QR_KB_NAV_ORDER[navPos];
+}
+
+void drawQrKeyboardKey(uint8_t index, bool selected) {
+    const int keyW = 28;
+    const int keyH = 22;
+    const int gap = 2;
+    if (index < 40) {
+        const uint8_t row = index / 10;
+        const uint8_t col = index % 10;
+        const int x = 10 + col * (keyW + gap);
+        const int y = 96 + row * (keyH + gap);
+        const uint16_t bg = selected ? COL_CYAN : COL_BG;
+        const uint16_t fg = selected ? COL_BG : COL_CYAN;
+        frame.fillRect(x, y, keyW, keyH, bg);
+        frame.drawRect(x, y, keyW, keyH, selected ? COL_TEXT : COL_GRID);
+        frame.setTextDatum(MC_DATUM);
+        frame.setTextColor(fg, bg);
+        frame.setTextSize(1);
+        frame.drawString(String(qrKeyboardCharAt(index)), x + keyW / 2, y + keyH / 2 - 1, 2);
+        frame.setTextDatum(TL_DATUM);
+        return;
+    }
+
+    const uint8_t special = index - 40;
+    const int startCol = special * 2;
+    const int x = 10 + startCol * (keyW + gap);
+    const int y = 96 + 4 * (keyH + gap);
+    const int w = keyW * 2 + gap;
+    const uint16_t accent = special == 2 ? COL_GREEN : (special == 3 ? COL_RED : (special == 4 && qrKeyboardShift ? COL_AMBER : COL_CYAN));
+    const uint16_t bg = selected ? accent : COL_BG;
+    const uint16_t fg = selected ? COL_BG : accent;
+    frame.fillRect(x, y, w, keyH + 2, bg);
+    frame.drawRect(x, y, w, keyH + 2, accent);
+    frame.setTextDatum(MC_DATUM);
+    frame.setTextColor(fg, bg);
+    frame.setTextSize(1);
+    frame.drawString(QR_KB_SPECIAL[special], x + w / 2, y + (keyH + 2) / 2, 1);
+    frame.setTextDatum(TL_DATUM);
+}
+
+void drawQrKeyboard() {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("QR TEXT", qrKeyboardShift ? "mayus" : "texto");
+    drawText(10, 34, "Escribe el texto y confirma con OK.", COL_CYAN);
+    frame.fillRect(10, 54, 300, 34, COL_BG);
+    frame.drawRect(10, 54, 300, 34, COL_CYAN);
+
+    String text = qrTextValue;
+    if ((millis() / 500) % 2 == 0) text += "_";
+    if (text.length() > 31) text = text.substring(text.length() - 31);
+    drawTextOn(16, 63, text.length() ? text : "_", COL_TEXT, COL_BG, 1);
+    frame.setTextDatum(TR_DATUM);
+    frame.setTextColor(COL_MUTED, COL_BG);
+    frame.setTextSize(1);
+    frame.drawString(String(strlen(qrTextValue)) + "/" + String(QR_TEXT_MAX_LEN), 304, 76, 1);
+    frame.setTextDatum(TL_DATUM);
+
+    for (uint8_t i = 0; i < QR_KEY_COUNT; i++) drawQrKeyboardKey(i, i == qrKeyboardIndex);
+    drawText(12, 206, fitText(String("Status: ") + statusLine, 42), COL_MUTED);
+    drawFooter("UP/DOWN TECLA  OK SELECT  BACK BORRA");
+    pushFrame();
+}
+
+int qrExecuteKeyboardKey() {
+    if (qrKeyboardIndex < 40) {
+        const char c = qrKeyboardCharAt(qrKeyboardIndex);
+        const size_t len = strlen(qrTextValue);
+        if (c && len < QR_TEXT_MAX_LEN) {
+            qrTextValue[len] = c;
+            qrTextValue[len + 1] = '\0';
+            toneClick(2500, 10);
+        }
+        return 0;
+    }
+
+    switch (qrKeyboardIndex - 40) {
+        case 0: {
+            const size_t len = strlen(qrTextValue);
+            if (len > 0) qrTextValue[len - 1] = '\0';
+            toneClick(1200, 10);
+            return 0;
+        }
+        case 1: {
+            const size_t len = strlen(qrTextValue);
+            if (len < QR_TEXT_MAX_LEN) {
+                qrTextValue[len] = ' ';
+                qrTextValue[len + 1] = '\0';
+            }
+            toneClick(1800, 10);
+            return 0;
+        }
+        case 2:
+            if (qrGenerateText(qrTextValue)) {
+                qrGenerated = true;
+                toneClick(3200, 18);
+                return 1;
+            }
+            setStatus("QR texto vacio");
+            toneClick(900, 30);
+            return 0;
+        case 3:
+            toneClick(1200, 35);
+            return 2;
+        case 4:
+            qrKeyboardShift = !qrKeyboardShift;
+            toneClick(qrKeyboardShift ? 2800 : 1800, 12);
+            return 0;
+    }
+    return 0;
+}
+
+void drawQrResult() {
+    frame.fillSprite(COL_BG);
+
+    if (!qrGenerated && !qrGenerateText(qrTextValue)) {
+        drawText(28, 94, "No hay texto para generar QR.", COL_RED);
+        drawFooter("BACK TECLADO");
+        pushFrame();
+        return;
+    }
+    qrGenerated = true;
+
+    const int quiet = 4;
+    const int scale = 5;
+    const int full = (QR_SIZE + quiet * 2) * scale;
+    const int x0 = (SCREEN_W - full) / 2;
+    const int y0 = (SCREEN_H - full) / 2;
+    frame.fillRect(x0, y0, full, full, TFT_WHITE);
+
+    for (uint8_t row = 0; row < QR_SIZE; row++) {
+        for (uint8_t col = 0; col < QR_SIZE; col++) {
+            if (!qrModules[row][col]) continue;
+            const int x = x0 + (col + quiet) * scale;
+            const int y = y0 + (row + quiet) * scale;
+            frame.fillRect(x, y, scale, scale, TFT_BLACK);
+        }
+    }
+    pushFrame();
+}
+
+void runQrTextApp() {
+    currentScreen = Screen::QrText;
+    qrKeyboardIndex = 10;
+    qrKeyboardShift = false;
+    qrGenerated = false;
+    qrTextValue[0] = '\0';
+    bool resultMode = false;
+    setStatus("QR text ready");
+    drawQrKeyboard();
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::LongSelect) break;
+
+        if (!resultMode) {
+            if (action == AppAction::Back) {
+                const size_t len = strlen(qrTextValue);
+                if (len > 0) {
+                    qrTextValue[len - 1] = '\0';
+                    toneClick(1200, 10);
+                    drawQrKeyboard();
+                } else {
+                    break;
+                }
+            } else if (action == AppAction::Up) {
+                qrMoveKeyboard(-1);
+                toneClick();
+                drawQrKeyboard();
+            } else if (action == AppAction::Down) {
+                qrMoveKeyboard(1);
+                toneClick();
+                drawQrKeyboard();
+            } else if (action == AppAction::Select) {
+                const int result = qrExecuteKeyboardKey();
+                if (result == 1) {
+                    resultMode = true;
+                    drawQrResult();
+                } else if (result == 2) {
+                    break;
+                } else {
+                    drawQrKeyboard();
+                }
+            } else {
+                delay(4);
+            }
+            continue;
+        }
+
+        if (action == AppAction::Back) {
+            resultMode = false;
+            qrGenerated = false;
+            drawQrKeyboard();
+        } else if (action == AppAction::Select) {
+            qrTextValue[0] = '\0';
+            qrKeyboardIndex = 10;
+            qrKeyboardShift = false;
+            qrGenerated = false;
+            resultMode = false;
+            toneClick(2400, 12);
+            drawQrKeyboard();
+        } else {
+            delay(4);
         }
     }
 
@@ -5061,7 +5530,8 @@ enum DemoLauncherAction : uint8_t {
     DEMO_ACT_PASSCODE,
     DEMO_ACT_HID,
     DEMO_ACT_IPHONE,
-    DEMO_ACT_RADIO
+    DEMO_ACT_RADIO,
+    DEMO_ACT_QR
 };
 
 const HidPadEntry DEMO_LAUNCHER_MENU[] = {
@@ -5073,6 +5543,7 @@ const HidPadEntry DEMO_LAUNCHER_MENU[] = {
     {"HID PAD", "PC control seguro", DEMO_ACT_HID},
     {"IPHONE REMOTE", "Control BLE para iPhone", DEMO_ACT_IPHONE},
     {"RADIO SCOPE", "nRF24 2.4 GHz visual", DEMO_ACT_RADIO},
+    {"QR TEXT", "Texto visible para escanear", DEMO_ACT_QR},
     {"VOLVER", "Regresar al launcher", DEMO_ACT_BACK},
 };
 
@@ -5086,6 +5557,7 @@ const char* demoActionTag(uint8_t action) {
         case DEMO_ACT_HID: return "USB";
         case DEMO_ACT_IPHONE: return "iOS";
         case DEMO_ACT_RADIO: return "2.4G";
+        case DEMO_ACT_QR: return "QR";
         default: return "EXIT";
     }
 }
@@ -5100,6 +5572,7 @@ uint16_t demoActionColor(uint8_t action) {
         case DEMO_ACT_HID: return COL_TEXT;
         case DEMO_ACT_IPHONE: return COL_CYAN;
         case DEMO_ACT_RADIO: return COL_GREEN;
+        case DEMO_ACT_QR: return COL_CYAN;
         default: return COL_MUTED;
     }
 }
@@ -5239,6 +5712,7 @@ void runCyberDemoLauncherApp() {
                 case DEMO_ACT_HID: runHidPadApp(); break;
                 case DEMO_ACT_IPHONE: runIphoneRemoteApp(); break;
                 case DEMO_ACT_RADIO: runRadioScopeApp(); break;
+                case DEMO_ACT_QR: runQrTextApp(); break;
                 default: break;
             }
             currentScreen = Screen::DemoLauncher;
@@ -5278,18 +5752,46 @@ void drawBattery() {
     drawFooter("BACK EXIT");
 }
 
+void drawAxolotlMascot(int cx, int cy) {
+    frame.fillCircle(cx, cy, 22, 0xF81F);
+    frame.drawCircle(cx, cy, 22, COL_TEXT);
+    frame.fillCircle(cx - 8, cy - 5, 3, COL_BG);
+    frame.fillCircle(cx + 8, cy - 5, 3, COL_BG);
+    frame.drawFastHLine(cx - 7, cy + 8, 14, COL_BG);
+    frame.drawPixel(cx - 8, cy + 7, COL_BG);
+    frame.drawPixel(cx + 7, cy + 7, COL_BG);
+
+    const int hornY = cy - 11;
+    frame.drawLine(cx - 19, hornY, cx - 42, cy - 24, 0xF81F);
+    frame.drawLine(cx - 20, hornY + 4, cx - 44, cy - 10, 0xF81F);
+    frame.drawLine(cx - 19, hornY + 8, cx - 40, cy + 2, 0xF81F);
+    frame.drawLine(cx + 19, hornY, cx + 42, cy - 24, 0xF81F);
+    frame.drawLine(cx + 20, hornY + 4, cx + 44, cy - 10, 0xF81F);
+    frame.drawLine(cx + 19, hornY + 8, cx + 40, cy + 2, 0xF81F);
+    frame.fillCircle(cx - 42, cy - 24, 3, COL_CYAN);
+    frame.fillCircle(cx - 44, cy - 10, 3, COL_CYAN);
+    frame.fillCircle(cx - 40, cy + 2, 3, COL_CYAN);
+    frame.fillCircle(cx + 42, cy - 24, 3, COL_CYAN);
+    frame.fillCircle(cx + 44, cy - 10, 3, COL_CYAN);
+    frame.fillCircle(cx + 40, cy + 2, 3, COL_CYAN);
+}
+
 void drawAbout() {
     frame.fillSprite(COL_BG);
     drawGrid();
-    drawHeader("ABOUT TEMPLATE", "v0.1");
+    drawHeader("ABOUT", "final");
 
-    drawText(12, 42, "Base for individual CYBERDECK-S3 apps.", COL_GREEN);
-    drawText(12, 66, "Pins match the finished MINI firmware.", COL_CYAN);
-    drawText(12, 92, "Controls:", COL_AMBER);
-    drawText(28, 112, "UP/DOWN + encoder: navigate", COL_TEXT);
-    drawText(28, 132, "OK or encoder SW: select", COL_TEXT);
-    drawText(28, 152, "BACK or OK hold: exit", COL_TEXT);
-    drawText(12, 184, "Next app can replace one screen or this whole launcher.", COL_MUTED);
+    frame.drawRoundRect(10, 38, 300, 132, 6, COL_GREEN);
+    frame.fillRect(16, 44, 288, 120, 0x0004);
+    drawTextOn(24, 50, "CYBERDECK S3 APPS", COL_GREEN, 0x0004);
+    drawTextOn(24, 72, "Autor: PepeAngell", COL_TEXT, 0x0004);
+    drawTextOn(24, 96, "Instagram: @pepeangell", COL_CYAN, 0x0004);
+    drawTextOn(24, 116, "Facebook: ESP32-Tools", COL_CYAN, 0x0004);
+    drawTextOn(24, 136, "GitHub: pepeangell5", COL_CYAN, 0x0004);
+
+    drawAxolotlMascot(80, 198);
+    drawText(142, 180, "Mascota:", COL_AMBER);
+    drawText(142, 200, "Ajolote de inicio", COL_TEXT);
     drawFooter("BACK EXIT");
 }
 
@@ -5303,6 +5805,7 @@ void renderCurrent() {
         case Screen::GpsSos: drawHome(); break;
         case Screen::DemoLauncher: drawHome(); break;
         case Screen::SdVault: drawSdVault(); break;
+        case Screen::QrText: qrGenerated ? drawQrResult() : drawQrKeyboard(); break;
         case Screen::RadioScope: drawRadioScope(); break;
         case Screen::PasscodeSim: drawHome(); break;
         case Screen::HidDemo: drawHome(); break;
@@ -5360,6 +5863,10 @@ void handleAction(AppAction action) {
             } else if (MENU[menuIndex].screen == Screen::SdVault) {
                 toneClick(3200, 18);
                 runSdFileManagerApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::QrText) {
+                toneClick(3200, 18);
+                runQrTextApp();
                 return;
             } else if (MENU[menuIndex].screen == Screen::RadioScope) {
                 toneClick(3200, 18);

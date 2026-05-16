@@ -1,10 +1,23 @@
 # IPHONE-CONTROL-ESP32 / CYBERDECK S3 APPS
 
+[![Instagram](https://img.shields.io/badge/Instagram-@pepeangell-E4405F?style=for-the-badge&logo=instagram&logoColor=white)](https://instagram.com/pepeangell)
+[![Facebook](https://img.shields.io/badge/Facebook-ESP32--Tools-1877F2?style=for-the-badge&logo=facebook&logoColor=white)](https://facebook.com/esp32-tools)
+[![GitHub](https://img.shields.io/badge/GitHub-pepeangell5-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/pepeangell5)
+[![Web Flasher](https://img.shields.io/badge/Web_Flasher-Instalar-00C853?style=for-the-badge&logo=googlechrome&logoColor=white)](https://pepeangell5.github.io/IPHONE-CONTROL-ESP32/flasher/)
+
 Firmware para ESP32-S3 creado para el CYBERDECK MINI de PepeAngell. El proyecto esta pensado para videos cortos de ciberseguridad, electronica y hacking etico, con pantallas llamativas y funciones reales dentro de un marco legal y responsable.
 
-El firmware combina un launcher visual, herramientas de diagnostico, control HID USB para PC, control BLE para iPhone, GPS, microSD, radio scope pasivo con nRF24 y utilidades de bateria.
+El firmware combina un launcher visual, herramientas de diagnostico, control HID USB para PC, control BLE para iPhone, GPS, microSD, generador QR, radio scope pasivo con nRF24 y utilidades de bateria.
 
-> Estado actual: este repositorio contiene el codigo fuente. Mas adelante se agregaran los `.bin` finales y una web flasher.
+> Estado actual: release funcional con codigo fuente, capturas, binarios y web flasher.
+
+## Web flasher
+
+Instalacion desde navegador compatible con Web Serial:
+
+[Abrir CYBERDECK S3 APPS Web Flasher](https://pepeangell5.github.io/IPHONE-CONTROL-ESP32/flasher/)
+
+Tambien puedes usar los archivos de la carpeta `binarios/` con herramientas externas como `esptool.py`, ESP Flash Download Tool o flasheadores compatibles.
 
 ## Principios del proyecto
 
@@ -37,6 +50,28 @@ El firmware combina un launcher visual, herramientas de diagnostico, control HID
 - Switch del encoder: tambien funciona como seleccion.
 - `BACK`: regresar.
 - `OK` mantenido: regreso alternativo desde menus y apps.
+
+## Galeria
+
+| Inicio | Menu | System Pulse | GPS Rescue |
+| --- | --- | --- | --- |
+| <img src="img/cyberdeck.JPG" width="180"> | <img src="img/menu.JPG" width="180"> | <img src="img/system_pulse.JPG" width="180"> | <img src="img/gps_rescue.JPG" width="180"> |
+
+| WiFi Radar | WiFi Channels | BLE Pulse | GPS SOS |
+| --- | --- | --- | --- |
+| <img src="img/wifi_radar.JPG" width="180"> | <img src="img/wifi_chanel.JPG" width="180"> | <img src="img/ble_pulse.JPG" width="180"> | <img src="img/gps_sos.JPG" width="180"> |
+
+| Cyber Demo | SD Explorer | QR Text | Radio Scope |
+| --- | --- | --- | --- |
+| <img src="img/cyber_demo.JPG" width="180"> | <img src="img/sd_explorer.JPG" width="180"> | <img src="img/qr_text.JPG" width="180"> | <img src="img/radio_scope.JPG" width="180"> |
+
+| Passcode Sim | HID Pad | iPhone Remote | Battery |
+| --- | --- | --- | --- |
+| <img src="img/passcode.JPG" width="180"> | <img src="img/hid_pad.JPG" width="180"> | <img src="img/iphone_remote.JPG" width="180"> | <img src="img/battery.JPG" width="180"> |
+
+| About |
+| --- |
+| <img src="img/about_template.JPG" width="180"> |
 
 ## Apps incluidas
 
@@ -174,7 +209,7 @@ Modo rapido para grabar reels.
 - Lista demos principales con tarjeta destacada, etiqueta de categoria y modo etico visible.
 - Al seleccionar una demo muestra cuenta regresiva 3, 2, 1 con pantalla `EN VIVO`.
 - `BACK` permite cancelar durante la cuenta regresiva antes de lanzar la demo.
-- Lanza WiFi Locator, WiFi Channels, BLE Radar, GPS SOS, Passcode Sim, HID Pad, iPhone Remote o Radio Scope.
+- Lanza WiFi Locator, WiFi Channels, BLE Radar, GPS SOS, Passcode Sim, HID Pad, iPhone Remote, Radio Scope o QR Text.
 - Muestra `@pepeangelll` como referencia visual dentro del launcher.
 
 ### SD VAULT
@@ -189,6 +224,19 @@ Explorador completo para la tarjeta microSD.
 - Permite eliminar archivos y carpetas con confirmacion.
 - Las carpetas se eliminan de forma recursiva, incluyendo su contenido.
 - Si no hay tarjeta o falla el montaje, `OK` reintenta detectar la microSD.
+
+### QR TEXT
+
+Generador QR offline para texto corto.
+
+- Abre un teclado virtual en pantalla.
+- Permite escribir letras, numeros, espacios y caracteres utiles para URLs cortas.
+- `OK` genera un codigo QR version 4-L directamente en el ESP32.
+- El QR codifica texto plano; en iPhone una palabra o frase puede abrirse como busqueda web.
+- El QR se muestra con zona blanca de lectura para escanearlo con la camara del telefono.
+- Soporta hasta 78 caracteres ASCII para mantenerlo legible en la TFT 240x320.
+- No usa WiFi, backend ni microSD.
+- `BACK` edita el texto y `OK` en la pantalla QR empieza uno nuevo.
 
 ### RADIO SCOPE
 
@@ -330,13 +378,14 @@ Medidor visual de bateria Li-ion 1S.
 - Muestra voltaje aproximado.
 - Calcula porcentaje estimado entre 3.25 V y 4.20 V.
 
-### ABOUT TEMPLATE
+### ABOUT
 
-Pantalla de referencia del proyecto.
+Pantalla final de creditos y redes.
 
-- Resume controles.
-- Indica que este firmware sirve como base para nuevas apps individuales.
-- Mantiene el layout visual y las APIs comunes del launcher.
+- Instagram: `@pepeangell`.
+- Facebook: `ESP32-Tools`.
+- GitHub: `pepeangell5`.
+- Muestra la mascota: el ajolote de la pantalla de inicio.
 
 ## Estructura del proyecto
 
@@ -374,6 +423,28 @@ pio run
 pio run -t upload
 ```
 
+## Binarios incluidos
+
+La carpeta `binarios/` contiene:
+
+- `CYBERDECK-S3-APPS-full.bin`: binario final combinado para flasheo desde `0x0`.
+- `firmware.bin`: aplicacion principal para flasheo desde `0x10000`.
+- `bootloader.bin`: bootloader para `0x0`.
+- `partitions.bin`: tabla de particiones para `0x8000`.
+- `boot_app0.bin`: binario OTA auxiliar para `0xE000`.
+
+Flasheo manual con archivos separados:
+
+```powershell
+esptool.py --chip esp32s3 --baud 460800 write_flash -z 0x0 binarios/bootloader.bin 0x8000 binarios/partitions.bin 0xE000 binarios/boot_app0.bin 0x10000 binarios/firmware.bin
+```
+
+Flasheo manual con binario combinado:
+
+```powershell
+esptool.py --chip esp32s3 --baud 460800 write_flash -z 0x0 binarios/CYBERDECK-S3-APPS-full.bin
+```
+
 ## Configuracion de pantalla
 
 La pantalla usada es una ST7789 SPI de 2.8 pulgadas con resolucion 240x320. El firmware dibuja en orientacion horizontal con un canvas de 320x240.
@@ -391,14 +462,15 @@ Parametros importantes en `platformio.ini`:
 - `TFT_RST=14`
 - `TFT_INVERSION_OFF=1`
 
-## Roadmap
+## Release
 
-- Generar binario final para flasheo.
-- Crear web flasher para instalar el firmware desde navegador.
-- Agregar mas apps individuales para video.
-- Mejorar GPS con auto-baud y mas ciudades/municipios.
-- Agregar capturas/fotos del dispositivo al README.
-- Crear versiones por app para demos cortas.
+Este release deja el proyecto listo para publicacion:
+
+- Firmware funcional para ESP32-S3.
+- Capturas en `img/`.
+- Binarios en `binarios/`.
+- Web flasher en `flasher/`.
+- README con funciones, hardware, controles, imagenes y modos de flasheo.
 
 ## Nota etica
 
