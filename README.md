@@ -167,50 +167,6 @@ Pantalla de emergencia pensada para hiking o situaciones donde necesitas dictar 
 
 Para emergencia real, las coordenadas decimales `LAT` y `LON` son el dato principal.
 
-### INSTA MONITOR
-
-Monitor visual de estadisticas publicas/permitidas de Instagram mediante un endpoint propio.
-
-- Incluye teclado virtual para escribir un usuario de Instagram.
-- Teclado basado en matriz 4x10 con fila especial `DEL`, `CLEAR`, `OK`, `X` y `SHIFT`.
-- Usa `UP/DOWN` para navegar por las teclas y `OK` para seleccionar.
-- Antes del usuario escanea redes WiFi, permite elegir una red y escribir la contrasena con el mismo teclado.
-- El teclado incluye modo `SHIFT/LOW` para mayusculas y simbolos basicos en passwords.
-- Despues de conectar WiFi muestra el teclado de usuario; la tecla `OK` cambia a resultados y consulta el endpoint si esta configurado.
-- `BACK` borra el ultimo caracter; si el campo queda vacio, regresa a la pantalla anterior.
-- No requiere microSD para capturar el usuario ni mostrar la pantalla de resultados.
-- No guarda tokens ni credenciales de Meta dentro del firmware.
-- Espera un JSON simple con `username`, `followers` o `followers_count`, y `media` o `media_count`.
-- Si no hay endpoint configurado, muestra un resultado visual `DEMO sin API` claramente marcado; esos numeros no son reales.
-- Para datos reales se debe configurar `IG_API_URL` hacia un backend propio/autorizado.
-
-Config opcional por build flags privados:
-
-```txt
--D IG_API_URL=\"https://tu-api.com/ig?user={user}\"
-```
-
-Ejemplo de respuesta JSON esperada:
-
-```json
-{
-  "status": "ok",
-  "username": "pepeangelll",
-  "followers": 12345,
-  "media": 120
-}
-```
-
-La consulta a Instagram debe hacerse desde un backend propio usando APIs permitidas, por ejemplo Meta Graph API para cuentas profesionales autorizadas. Evita scraping y no publiques tokens.
-
-Backend incluido:
-
-```txt
-backend/instagram-meta-worker/
-```
-
-Ese worker devuelve el JSON que el ESP32 ya entiende. Requiere secretos `META_ACCESS_TOKEN` e `IG_USER_ID` guardados en Cloudflare, nunca en el firmware.
-
 ### CYBER DEMO LAUNCHER
 
 Modo rapido para grabar reels.
@@ -218,7 +174,7 @@ Modo rapido para grabar reels.
 - Lista demos principales con tarjeta destacada, etiqueta de categoria y modo etico visible.
 - Al seleccionar una demo muestra cuenta regresiva 3, 2, 1 con pantalla `EN VIVO`.
 - `BACK` permite cancelar durante la cuenta regresiva antes de lanzar la demo.
-- Lanza WiFi Locator, WiFi Channels, BLE Radar, GPS SOS, Insta Monitor, Passcode Sim, HID Pad, iPhone Remote o Radio Scope.
+- Lanza WiFi Locator, WiFi Channels, BLE Radar, GPS SOS, Passcode Sim, HID Pad, iPhone Remote o Radio Scope.
 - Muestra `@pepeangelll` como referencia visual dentro del launcher.
 
 ### SD VAULT
@@ -386,7 +342,6 @@ include/CyberdeckPins.h  Pines del hardware
 include/AppInput.h       API comun de botones y encoder
 src/AppInput.cpp         Lectura de botones, encoder, debounce y long press
 src/main.cpp             Launcher, apps visuales, GPS, SD, HID USB y BLE
-backend/instagram-meta-worker/ Backend opcional para datos reales de Insta Monitor
 platformio.ini           Configuracion ESP32-S3, TFT_eSPI, librerias y USB HID
 ```
 
@@ -398,7 +353,6 @@ Librerias principales:
 
 - `TFT_eSPI`
 - `RF24`
-- `ArduinoJson`
 - `TinyGPSPlus`
 - `USB`
 - `ESP32 BLE Arduino`
