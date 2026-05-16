@@ -17,6 +17,7 @@
 #include "USBHIDKeyboard.h"
 #include <math.h>
 
+#include "AjoloteSprite.h"
 #include "AppInput.h"
 #include "CyberdeckPins.h"
 
@@ -5752,30 +5753,6 @@ void drawBattery() {
     drawFooter("BACK EXIT");
 }
 
-void drawAxolotlMascot(int cx, int cy) {
-    frame.fillCircle(cx, cy, 22, 0xF81F);
-    frame.drawCircle(cx, cy, 22, COL_TEXT);
-    frame.fillCircle(cx - 8, cy - 5, 3, COL_BG);
-    frame.fillCircle(cx + 8, cy - 5, 3, COL_BG);
-    frame.drawFastHLine(cx - 7, cy + 8, 14, COL_BG);
-    frame.drawPixel(cx - 8, cy + 7, COL_BG);
-    frame.drawPixel(cx + 7, cy + 7, COL_BG);
-
-    const int hornY = cy - 11;
-    frame.drawLine(cx - 19, hornY, cx - 42, cy - 24, 0xF81F);
-    frame.drawLine(cx - 20, hornY + 4, cx - 44, cy - 10, 0xF81F);
-    frame.drawLine(cx - 19, hornY + 8, cx - 40, cy + 2, 0xF81F);
-    frame.drawLine(cx + 19, hornY, cx + 42, cy - 24, 0xF81F);
-    frame.drawLine(cx + 20, hornY + 4, cx + 44, cy - 10, 0xF81F);
-    frame.drawLine(cx + 19, hornY + 8, cx + 40, cy + 2, 0xF81F);
-    frame.fillCircle(cx - 42, cy - 24, 3, COL_CYAN);
-    frame.fillCircle(cx - 44, cy - 10, 3, COL_CYAN);
-    frame.fillCircle(cx - 40, cy + 2, 3, COL_CYAN);
-    frame.fillCircle(cx + 42, cy - 24, 3, COL_CYAN);
-    frame.fillCircle(cx + 44, cy - 10, 3, COL_CYAN);
-    frame.fillCircle(cx + 40, cy + 2, 3, COL_CYAN);
-}
-
 void drawAbout() {
     frame.fillSprite(COL_BG);
     drawGrid();
@@ -5789,7 +5766,7 @@ void drawAbout() {
     drawTextOn(24, 116, "Facebook: ESP32-Tools", COL_CYAN, 0x0004);
     drawTextOn(24, 136, "GitHub: pepeangell5", COL_CYAN, 0x0004);
 
-    drawAxolotlMascot(80, 198);
+    drawAjoloteHalf(frame, 56, 176, COL_GREEN);
     drawText(142, 180, "Mascota:", COL_AMBER);
     drawText(142, 200, "Ajolote de inicio", COL_TEXT);
     drawFooter("BACK EXIT");
