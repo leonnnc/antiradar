@@ -2,21 +2,18 @@
 
 Esta guía documentará el diseño y ensamblaje de la base (motherboard) del Cyberdeck paso a paso. Comenzamos con una placa base vacía (PCB) y añadiremos cada componente uno a uno.
 
-## La Placa Base Vacía (PCB)
+## La Placa Base Vacía (PCB V2)
 
-Para alojar los componentes en un formato angosto y compacto, utilizaremos una placa de doble cara:
+Para alojar los componentes en un formato angosto y compacto, utilizaremos una placa de doble cara simplificada:
 
-![Placa Base Vacía (Frente y Reverso)](img/cyberdeck_empty_shield.png)
+![Placa Base Vacía V2 (Frente y Reverso)](img/cyberdeck_empty_shield_v2.png)
 
-### Distribución de la Placa Vacía:
+### Distribución de la Placa Vacía V2:
 *   **Cara Frontal (Top Layer):**
-    *   **Área de Pantalla (TFT_LCD):** Espacio en la mitad superior para una pantalla TFT de 2.8".
-    *   **Botones (BTN_A, BTN_B, BTN_C, BTN_D):** Cuatro footprints para pulsadores táctiles.
-    *   **Codificador (ENCODER_1):** Footprint para un encoder rotativo EC11.
+    *   **Área de Pantalla (TFT_LCD):** Zócalo/footprint de pines para una pantalla TFT de 2.8" (TFT_CS, RST, RS/DC, MOSI, SCK, LED_A, VCC, GND). *Nota: No hay botones ni encoder rotativo en esta placa.*
 *   **Cara Trasera (Bottom Layer):**
-    *   **Zócalo ESP32-S3 (Centro):** Dos tiras de pines hembra para el módulo de desarrollo central.
-    *   **Zócalo MicroSD (Abajo):** Footprint para un conector de tarjeta MicroSD.
-    *   **Zócalo nRF24L01 (Lado Derecho):** Footprints para los módulos transceptores de radio.
+    *   **Zócalo ESP32-S3 DevKitC-1 (Centro):** Dos filas de pines hembra para el microcontrolador central.
+    *   **Zócalos nRF24L01+ (Lado Derecho):** Footprints y conectores para dos módulos transceptores de radio apilados de forma vertical (nRF24L01+ #1 arriba y #2 abajo). *Nota: No hay socket de tarjeta MicroSD en la parte trasera.*
 
 ---
 
