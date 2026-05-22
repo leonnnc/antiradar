@@ -6,6 +6,7 @@
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <BLEAdvertisedDevice.h>
 #include <BLEDevice.h>
 #include <BLEHIDDevice.h>
@@ -121,7 +122,8 @@ enum class Screen : uint8_t {
     HidDemo,
     IphoneRemote,
     Battery,
-    About
+    About,
+    WifiSniffer
 };
 
 struct MenuEntry {
@@ -146,6 +148,7 @@ const MenuEntry MENU[] = {
     {"IPHONE REMOTE", "BLE app launcher y multimedia", Screen::IphoneRemote},
     {"BATTERY METER", "Voltaje y porcentaje Li-ion", Screen::Battery},
     {"ABOUT", "Redes, creditos y mascota", Screen::About},
+    {"WIFI SNIFFER", "Escaneo pasivo de Probe/Beacon", Screen::WifiSniffer},
 };
 
 struct GpsPlace {
@@ -230,6 +233,13 @@ const GpsPlace GPS_PLACES[] = {
     {"Buenaventura", "Buenaventura", "Chihuahua MX", 29.8380f, -107.4710f, 55},
     {"Ascension", "Ascension", "Chihuahua MX", 31.0920f, -107.9960f, 60},
     {"Janos", "Janos", "Chihuahua MX", 30.8900f, -108.1930f, 55},
+    {"Madrid", "Madrid", "Madrid ES", 40.4168f, -3.7038f, 50},
+    {"Barcelona", "Barcelona", "Catalunya ES", 41.3879f, 2.1686f, 40},
+    {"Ciudad de Mexico", "CDMX", "CDMX MX", 19.4326f, -99.1332f, 80},
+    {"Buenos Aires", "CABA", "Buenos Aires AR", -34.6037f, -58.3816f, 75},
+    {"Bogota", "Bogota", "Cundinamarca CO", 4.7110f, -74.0721f, 70},
+    {"Santiago", "Santiago", "Metropolitana CL", -33.4489f, -70.6693f, 65},
+    {"Lima", "Lima", "Lima PE", -12.0464f, -77.0428f, 70},
 };
 
 GpsResolvedPlace gpsResolvedPlace = {};
@@ -261,6 +271,127 @@ uint32_t wifiScanPass = 0;
 uint32_t wifiLastTargetScanMs = 0;
 uint32_t wifiAsyncScanStartedMs = 0;
 bool wifiAsyncScanActive = false;
+
+struct SniffedDevice {
+    uint8_t mac[6];
+    char macStr[18];
+    char ssid[33];
+    int32_t rssi;
+    uint32_t lastSeenMs;
+    uint8_t type; // 0 = Probe Request, 1 = Beacon
+};
+
+constexpr uint8_t SNIFFER_MAX_DEVICES = 24;
+SniffedDevice snifferDevices[SNIFFER_MAX_DEVICES] = {};
+uint8_t snifferDeviceCount = 0;
+uint8_t snifferListSelected = 0;
+uint8_t snifferListScroll = 0;
+bool snifferActive = false;
+
+// Signal tracking variables for the selected target MAC
+bool snifferTargetValid = false;
+bool snifferTargetSeen = false;
+char snifferTargetMacStr[18] = "";
+uint8_t snifferTargetMac[6] = {0};
+int32_t snifferTargetRssi = -127;
+int32_t snifferLastTargetRssi = -127;
+int32_t snifferBestRssi = -127;
+int16_t snifferTrendDb = 0;
+int16_t snifferHistory[WIFI_HISTORY_LEN] = {};
+uint8_t snifferHistoryHead = 0;
+uint32_t snifferScanPass = 0;
+uint32_t snifferLastTargetSeenMs = 0;
+
+void wifi_promiscuous_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
+    if (type != WIFI_PKT_MGMT) return;
+    wifi_promiscuous_pkt_t* pkt = (wifi_promiscuous_pkt_t*)buf;
+    uint8_t* payload = pkt->payload;
+    int len = pkt->rx_ctrl.sig_len;
+    int rssi = pkt->rx_ctrl.rssi;
+
+    if (len < 24) return;
+
+    uint8_t fc = payload[0];
+    uint8_t type_val = (fc >> 2) & 0x03;
+    uint8_t subtype_val = (fc >> 4) & 0x0F;
+
+    if (type_val != 0) return; // Management frame
+
+    if (subtype_val != 0x04 && subtype_val != 0x08) return; // Probe req / Beacon
+
+    uint8_t* src_mac = &payload[10];
+
+    int tags_offset = (subtype_val == 0x04) ? 24 : 36;
+    char ssid[33] = "";
+    if (len > tags_offset) {
+        int i = tags_offset;
+        while (i < len - 2) {
+            uint8_t tag_num = payload[i];
+            uint8_t tag_len = payload[i + 1];
+            if (i + 2 + tag_len > len) break;
+            if (tag_num == 0) { // SSID
+                int ssid_len = min<int>(tag_len, 32);
+                memcpy(ssid, &payload[i + 2], ssid_len);
+                ssid[ssid_len] = '\0';
+                break;
+            }
+            i += 2 + tag_len;
+        }
+    }
+
+    if (snifferTargetValid && memcmp(src_mac, snifferTargetMac, 6) == 0) {
+        snifferTargetRssi = rssi;
+        snifferLastTargetSeenMs = millis();
+        snifferTargetSeen = true;
+    }
+
+    int foundIdx = -1;
+    for (int d = 0; d < snifferDeviceCount; d++) {
+        if (memcmp(snifferDevices[d].mac, src_mac, 6) == 0) {
+            foundIdx = d;
+            break;
+        }
+    }
+
+    if (foundIdx != -1) {
+        snifferDevices[foundIdx].rssi = rssi;
+        snifferDevices[foundIdx].lastSeenMs = millis();
+        if (strlen(ssid) > 0) {
+            strncpy(snifferDevices[foundIdx].ssid, ssid, sizeof(snifferDevices[foundIdx].ssid) - 1);
+        }
+    } else {
+        if (snifferDeviceCount < SNIFFER_MAX_DEVICES) {
+            SniffedDevice& dev = snifferDevices[snifferDeviceCount];
+            memcpy(dev.mac, src_mac, 6);
+            snprintf(dev.macStr, sizeof(dev.macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                     src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]);
+            strncpy(dev.ssid, ssid, sizeof(dev.ssid) - 1);
+            dev.ssid[sizeof(dev.ssid) - 1] = '\0';
+            dev.rssi = rssi;
+            dev.lastSeenMs = millis();
+            dev.type = (subtype_val == 0x04) ? 0 : 1;
+            snifferDeviceCount++;
+        } else {
+            int oldestIdx = 0;
+            uint32_t oldestMs = snifferDevices[0].lastSeenMs;
+            for (int d = 1; d < SNIFFER_MAX_DEVICES; d++) {
+                if (snifferDevices[d].lastSeenMs < oldestMs) {
+                    oldestMs = snifferDevices[d].lastSeenMs;
+                    oldestIdx = d;
+                }
+            }
+            SniffedDevice& dev = snifferDevices[oldestIdx];
+            memcpy(dev.mac, src_mac, 6);
+            snprintf(dev.macStr, sizeof(dev.macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                     src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]);
+            strncpy(dev.ssid, ssid, sizeof(dev.ssid) - 1);
+            dev.ssid[sizeof(dev.ssid) - 1] = '\0';
+            dev.rssi = rssi;
+            dev.lastSeenMs = millis();
+            dev.type = (subtype_val == 0x04) ? 0 : 1;
+        }
+    }
+}
 bool btClassicReleased = false;
 bool bleStackReady = false;
 BLEScan* bleScan = nullptr;
@@ -4165,6 +4296,341 @@ void runBleDeviceRadarApp() {
     }
 }
 
+void drawWifiSnifferList(uint8_t currentChannel) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("WIFI SNIFFER", ("ch " + String(currentChannel) + " | dev " + String(snifferDeviceCount)).c_str());
+
+    frame.setTextSize(1);
+    frame.setTextColor(COL_CYAN, COL_BG);
+    frame.drawString("Escaneo de Probes (Dispositivos) y Beacons", 10, 32, 2);
+
+    const int listY = 48;
+    const int rowH = 26;
+    const uint8_t visible = 6;
+
+    if (snifferListSelected < snifferListScroll) snifferListScroll = snifferListSelected;
+    if (snifferListSelected >= snifferListScroll + visible) snifferListScroll = snifferListSelected - visible + 1;
+
+    for (uint8_t row = 0; row < visible; row++) {
+        const uint8_t idx = snifferListScroll + row;
+        const int y = listY + row * rowH;
+
+        if (idx >= snifferDeviceCount) {
+            frame.drawRoundRect(10, y, 300, 24, 4, 0x0821);
+            continue;
+        }
+
+        const SniffedDevice& dev = snifferDevices[idx];
+        const bool selected = idx == snifferListSelected;
+        const uint16_t bg = selected ? COL_GREEN : COL_PANEL;
+        const uint16_t fg = selected ? COL_BG : COL_TEXT;
+        const uint16_t macColor = selected ? COL_BG : COL_CYAN;
+        const uint16_t rssiColor = selected ? COL_BG : (dev.rssi > -65 ? COL_GREEN : (dev.rssi > -85 ? COL_AMBER : COL_RED));
+
+        frame.fillRoundRect(10, y, 300, 24, 4, bg);
+        frame.drawRoundRect(10, y, 300, 24, 4, selected ? COL_TEXT : COL_GRID);
+
+        // Draw type badge: PRB or BCN
+        const char* typeStr = (dev.type == 0) ? "PRB" : "BCN";
+        const uint16_t typeBg = selected ? COL_BG : (dev.type == 0 ? 0x03E0 : 0x01EF);
+        const uint16_t typeFg = selected ? COL_GREEN : COL_TEXT;
+        frame.fillRoundRect(14, y + 4, 28, 16, 3, typeBg);
+        drawTextOn(18, y + 5, typeStr, typeFg, typeBg, 1);
+
+        // Draw MAC
+        drawTextOn(48, y + 4, dev.macStr, macColor, bg, 1);
+
+        // Draw RSSI
+        drawTextOn(175, y + 4, String(dev.rssi) + "dBm", rssiColor, bg, 1);
+
+        // Draw SSID or <broadcast>
+        String ssidStr = strlen(dev.ssid) > 0 ? String(dev.ssid) : "<broadcast>";
+        drawTextOn(225, y + 4, fitText(ssidStr, 11), fg, bg, 1);
+    }
+
+    drawFooter("UP/DOWN MOVE  OK TRACK  BACK VOLVER");
+    pushFrame();
+}
+
+void snifferResetTargetHistory() {
+    snifferBestRssi = -127;
+    snifferTargetRssi = -127;
+    snifferLastTargetRssi = -127;
+    snifferTrendDb = 0;
+    snifferScanPass = 0;
+    snifferTargetSeen = false;
+    memset(snifferHistory, 0, sizeof(snifferHistory));
+    snifferHistoryHead = 0;
+}
+
+void snifferUpdateTargetRssi(bool reset = false) {
+    if (reset) {
+        snifferResetTargetHistory();
+        return;
+    }
+    
+    if (snifferTargetRssi > -127) {
+        if (snifferBestRssi == -127 || snifferTargetRssi > snifferBestRssi) {
+            snifferBestRssi = snifferTargetRssi;
+        }
+        
+        if (snifferLastTargetRssi > -127) {
+            snifferTrendDb = snifferTargetRssi - snifferLastTargetRssi;
+        } else {
+            snifferTrendDb = 0;
+        }
+        
+        snifferLastTargetRssi = snifferTargetRssi;
+        snifferHistory[snifferHistoryHead] = snifferTargetRssi;
+        snifferHistoryHead = (snifferHistoryHead + 1) % WIFI_HISTORY_LEN;
+    } else {
+        snifferTrendDb = -8;
+        snifferHistory[snifferHistoryHead] = -100;
+        snifferHistoryHead = (snifferHistoryHead + 1) % WIFI_HISTORY_LEN;
+    }
+}
+
+float snifferMeters() {
+    if (snifferTargetRssi <= -127) return 999.0f;
+    float exponent = (-40.0f - (float)snifferTargetRssi) / 22.0f;
+    return powf(10.0f, exponent);
+}
+
+String snifferMetersText() {
+    float m = snifferMeters();
+    if (m >= 990.0f) return "? m";
+    if (m < 1.0f) return String(m, 1) + " m";
+    return String((int)m) + " m";
+}
+
+const char* snifferTrendText() {
+    if (snifferTargetRssi <= -127) return "BUSCANDO...";
+    if (snifferTrendDb > 2) return "ACERCANDOTE";
+    if (snifferTrendDb < -2) return "ALEJANDOTE";
+    return "ESTABLE";
+}
+
+uint16_t snifferTrendColor() {
+    if (snifferTargetRssi <= -127) return COL_AMBER;
+    if (snifferTrendDb > 2) return COL_GREEN;
+    if (snifferTrendDb < -2) return COL_RED;
+    return COL_CYAN;
+}
+
+void drawWifiSnifferHistory(int x, int y, int w, int h) {
+    frame.drawRect(x, y, w, h, COL_GRID);
+    for (uint8_t i = 0; i < WIFI_HISTORY_LEN; i++) {
+        const uint8_t idx = (snifferHistoryHead + i) % WIFI_HISTORY_LEN;
+        if (snifferHistory[idx] == 0) continue;
+        const int32_t val = snifferHistory[idx];
+        const uint8_t pct = val <= -100 ? 0 : (val >= -40 ? 100 : (val + 100) * 100 / 60);
+        const int px = x + 2 + (i * (w - 4)) / WIFI_HISTORY_LEN;
+        const int barH = max(1, (pct * (h - 4)) / 100);
+        const uint16_t color = pct > 70 ? COL_GREEN : (pct > 38 ? COL_AMBER : COL_RED);
+        frame.drawFastVLine(px, y + h - 2 - barH, barH, color);
+    }
+}
+
+void drawWifiSnifferTargetRadar(const char* ssid) {
+    frame.fillSprite(COL_BG);
+    drawGrid();
+    drawHeader("WIFI SNIFFER TRACK", snifferTargetSeen ? "rssi vivo" : "buscando");
+
+    const uint8_t pct = snifferTargetSeen ? (snifferTargetRssi <= -100 ? 0 : (snifferTargetRssi >= -40 ? 100 : (snifferTargetRssi + 100) * 100 / 60)) : 0;
+    const uint16_t dotColor = snifferTargetSeen ? (pct > 70 ? COL_GREEN : (pct > 38 ? COL_AMBER : COL_RED)) : COL_RED;
+    const uint32_t now = millis();
+    const int panelX = 14;
+    const int panelY = 42;
+    const int panelW = 132;
+    const int panelH = 138;
+    const int iconX = panelX + 43;
+    const int iconY = panelY + 64;
+    const int trackX = panelX + 93;
+    const int trackTop = panelY + 25;
+    const int trackBottom = panelY + 114;
+    const int trackH = trackBottom - trackTop;
+
+    frame.fillRoundRect(panelX, panelY, panelW, panelH, 6, 0x0004);
+    frame.drawRoundRect(panelX, panelY, panelW, panelH, 6, COL_CYAN);
+
+    const char* proxText = pct > 70 ? "MUY CERCA" : (pct > 38 ? "DIST. MEDIA" : (pct > 0 ? "LEJOS" : "PERDIDO"));
+    const uint16_t proxCol = pct > 70 ? COL_GREEN : (pct > 38 ? COL_AMBER : (pct > 0 ? COL_CYAN : COL_RED));
+    frame.fillRoundRect(panelX + 9, panelY + 7, 68, 18, 4, COL_PANEL);
+    drawText(panelX + 14, panelY + 9, proxText, proxCol);
+    
+    frame.fillTriangle(trackX - 5, trackTop - 8, trackX + 5, trackTop - 8, trackX, trackTop - 2, COL_GREEN);
+    frame.fillTriangle(trackX - 5, trackBottom + 8, trackX + 5, trackBottom + 8, trackX, trackBottom + 2, COL_RED);
+    frame.drawFastVLine(trackX, trackTop, trackH, COL_GRID);
+    for (uint8_t i = 0; i < 5; i++) {
+        const int y = trackTop + (i * trackH) / 4;
+        frame.drawFastHLine(trackX - 14, y, 28, COL_GRID);
+    }
+
+    const int fillH = (pct * trackH) / 100;
+    if (fillH > 0) {
+        frame.fillRoundRect(trackX - 7, trackBottom - fillH, 14, fillH, 5, dotColor);
+    }
+    const int markerY = snifferTargetSeen ? trackBottom - fillH : trackBottom;
+    const int markerPulse = 7 + ((now / 140) % 5);
+    frame.drawCircle(trackX, markerY, markerPulse, dotColor);
+    frame.drawCircle(trackX, markerY, markerPulse + 6, COL_GRID);
+    frame.fillCircle(trackX, markerY, 6, dotColor);
+
+    for (uint8_t wave = 0; wave < 3; wave++) {
+        const int radius = 18 + ((now / 120 + wave * 9) % 32);
+        const uint16_t color = wave == 0 ? dotColor : (wave == 1 ? COL_CYAN : COL_GRID);
+        frame.drawCircle(iconX, iconY, radius, snifferTargetSeen ? color : COL_MUTED);
+    }
+    frame.fillRoundRect(iconX - 15, iconY - 25, 30, 50, 6, COL_PANEL);
+    frame.drawRoundRect(iconX - 15, iconY - 25, 30, 50, 6, dotColor);
+    
+    frame.fillCircle(iconX, iconY + 12, 3, COL_CYAN);
+    frame.drawCircle(iconX, iconY + 12, 10, COL_CYAN);
+    frame.drawCircle(iconX, iconY + 12, 20, COL_CYAN);
+    
+    frame.drawRoundRect(154, 38, 154, 84, 5, COL_GRID);
+    String displaySSID = strlen(ssid) > 0 ? String(ssid) : "<broadcast>";
+    drawText(154 + 10, 46, fitGpsText(displaySSID, 16), COL_GREEN);
+    drawText(154 + 10, 64, snifferTargetMacStr, COL_MUTED);
+    drawText(154 + 10, 82, String(snifferTargetRssi) + " dBm  " + String(pct) + "%", snifferTargetSeen ? COL_CYAN : COL_RED);
+    drawText(154 + 10, 100, String("Peak ") + snifferBestRssi + " dBm", snifferBestRssi > -127 ? COL_GREEN : COL_MUTED);
+
+    frame.drawRoundRect(154, 130, 154, 68, 5, COL_GRID);
+    drawText(154 + 10, 142, snifferTrendText(), snifferTrendColor());
+    drawText(154 + 10, 160, String("Dist. ~ ") + snifferMetersText(), COL_AMBER);
+    drawBar(154 + 10, 180, 132, 6, pct, dotColor);
+
+    drawWifiSnifferHistory(18, 188, 124, 22);
+    drawFooter("BACK VOLVER A LISTA");
+    pushFrame();
+}
+
+void runWifiSnifferTargetRadar(const char* ssid) {
+    snifferResetTargetHistory();
+    snifferUpdateTargetRssi(true);
+    
+    for (int d = 0; d < snifferDeviceCount; d++) {
+        if (memcmp(snifferDevices[d].mac, snifferTargetMac, 6) == 0) {
+            snifferTargetRssi = snifferDevices[d].rssi;
+            snifferLastTargetSeenMs = snifferDevices[d].lastSeenMs;
+            snifferTargetSeen = true;
+            break;
+        }
+    }
+    
+    snifferUpdateTargetRssi();
+    drawWifiSnifferTargetRadar(ssid);
+    
+    uint32_t lastDraw = 0;
+    uint32_t lastHistoryUpdate = millis();
+    uint8_t currentCh = 1;
+
+    while (true) {
+        serviceGps(3);
+        
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) {
+            break;
+        }
+
+        uint32_t now = millis();
+        
+        static uint32_t lastHop = 0;
+        if (now - lastHop > 300) {
+            lastHop = now;
+            currentCh++;
+            if (currentCh > 13) currentCh = 1;
+            esp_wifi_set_channel(currentCh, WIFI_SECOND_CHAN_NONE);
+        }
+
+        if (snifferTargetSeen && (now - snifferLastTargetSeenMs > 5000)) {
+            snifferTargetSeen = false;
+            snifferTargetRssi = -127;
+        }
+
+        if (now - lastHistoryUpdate > 1000) {
+            lastHistoryUpdate = now;
+            snifferUpdateTargetRssi();
+            snifferScanPass++;
+        }
+
+        if (now - lastDraw > 150) {
+            lastDraw = now;
+            drawWifiSnifferTargetRadar(ssid);
+        }
+
+        delay(4);
+    }
+}
+
+void runWifiSnifferApp() {
+    currentScreen = Screen::WifiSniffer;
+    snifferDeviceCount = 0;
+    snifferListSelected = 0;
+    snifferListScroll = 0;
+    snifferActive = true;
+    snifferTargetValid = false;
+
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_promiscuous_rx_cb(&wifi_promiscuous_cb);
+
+    uint8_t currentCh = 1;
+    esp_wifi_set_channel(currentCh, WIFI_SECOND_CHAN_NONE);
+
+    uint32_t lastHop = millis();
+    uint32_t lastDraw = 0;
+
+    while (true) {
+        const AppAction action = inputRead();
+        if (action == AppAction::Back || action == AppAction::LongSelect) {
+            break;
+        }
+
+        if (action == AppAction::Up && snifferDeviceCount > 0) {
+            snifferListSelected = (snifferListSelected == 0) ? snifferDeviceCount - 1 : snifferListSelected - 1;
+            toneClick();
+        } else if (action == AppAction::Down && snifferDeviceCount > 0) {
+            snifferListSelected = (snifferListSelected + 1) % snifferDeviceCount;
+            toneClick();
+        } else if (action == AppAction::Select && snifferDeviceCount > 0) {
+            const SniffedDevice& dev = snifferDevices[snifferListSelected];
+            memcpy(snifferTargetMac, dev.mac, 6);
+            strncpy(snifferTargetMacStr, dev.macStr, sizeof(snifferTargetMacStr));
+            snifferTargetValid = true;
+            toneClick(3200, 18);
+            runWifiSnifferTargetRadar(dev.ssid);
+            currentScreen = Screen::WifiSniffer;
+        }
+
+        uint32_t now = millis();
+        if (now - lastHop > 300) {
+            lastHop = now;
+            currentCh++;
+            if (currentCh > 13) currentCh = 1;
+            esp_wifi_set_channel(currentCh, WIFI_SECOND_CHAN_NONE);
+        }
+
+        if (now - lastDraw > 150) {
+            lastDraw = now;
+            drawWifiSnifferList(currentCh);
+        }
+
+        delay(4);
+    }
+
+    esp_wifi_set_promiscuous(false);
+    snifferActive = false;
+    snifferTargetValid = false;
+
+    currentScreen = Screen::Home;
+    setStatus("Ready");
+    drawHome();
+    pushFrame();
+}
+
 String pinToString(const uint8_t* digits) {
     String out;
     for (uint8_t i = 0; i < 4; i++) out += String(digits[i]);
@@ -4490,6 +4956,9 @@ enum BleRemoteAction : uint8_t {
     BLE_ACT_OPEN_FACEBOOK,
     BLE_ACT_OPEN_SETTINGS,
     BLE_ACT_OPEN_PHOTOS,
+    BLE_ACT_OPEN_MAIL,
+    BLE_ACT_OPEN_MAPS,
+    BLE_ACT_OPEN_APP_STORE,
     BLE_ACT_HOME,
     BLE_ACT_APP_SWITCH,
     BLE_ACT_WRITE_NOTES,
@@ -4525,6 +4994,9 @@ const HidPadEntry BLE_REMOTE_MENU[] = {
     {"FACEBOOK", "Abrir por Spotlight", BLE_ACT_OPEN_FACEBOOK},
     {"CONFIGURACION", "Abrir por Spotlight", BLE_ACT_OPEN_SETTINGS},
     {"GALERIA", "Abrir Fotos", BLE_ACT_OPEN_PHOTOS},
+    {"CORREO", "Abrir por Spotlight", BLE_ACT_OPEN_MAIL},
+    {"MAPAS", "Abrir por Spotlight", BLE_ACT_OPEN_MAPS},
+    {"APP STORE", "Abrir por Spotlight", BLE_ACT_OPEN_APP_STORE},
     {"HOME", "Atajo Command+H", BLE_ACT_HOME},
     {"APP SWITCH", "Atajo Command+Tab", BLE_ACT_APP_SWITCH},
     {"TEXTO DEMO", "Escribir en Notas", BLE_ACT_WRITE_NOTES},
@@ -5228,6 +5700,15 @@ void runIphoneRemoteApp() {
             case BLE_ACT_OPEN_PHOTOS:
                 bleOpenIphoneApp("Fotos");
                 break;
+            case BLE_ACT_OPEN_MAIL:
+                bleOpenIphoneApp("Mail");
+                break;
+            case BLE_ACT_OPEN_MAPS:
+                bleOpenIphoneApp("Mapas");
+                break;
+            case BLE_ACT_OPEN_APP_STORE:
+                bleOpenIphoneApp("App Store");
+                break;
             case BLE_ACT_HOME:
                 if (ensureBleRemoteConnected()) {
                     drawBleStatus("HOME", "Enviando Command+H", 80);
@@ -5787,6 +6268,7 @@ void renderCurrent() {
         case Screen::PasscodeSim: drawHome(); break;
         case Screen::HidDemo: drawHome(); break;
         case Screen::IphoneRemote: drawHome(); break;
+        case Screen::WifiSniffer: drawHome(); break;
         case Screen::Battery: drawBattery(); break;
         case Screen::About: drawAbout(); break;
         case Screen::Home:
@@ -5857,6 +6339,10 @@ void handleAction(AppAction action) {
                 return;
             } else if (MENU[menuIndex].screen == Screen::IphoneRemote) {
                 runIphoneRemoteApp();
+                return;
+            } else if (MENU[menuIndex].screen == Screen::WifiSniffer) {
+                toneClick(3200, 18);
+                runWifiSnifferApp();
                 return;
             } else {
                 currentScreen = MENU[menuIndex].screen;
