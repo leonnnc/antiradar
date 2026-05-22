@@ -11,24 +11,26 @@ Esta placa base está diseñada bajo un concepto de **placa portadora pasiva (sh
 
 ---
 
-## La Placa Base Vacía (PCB V2)
+## La Placa Base Vacía (PCB V3)
 
-Para alojar los componentes en un formato angosto y compacto, utilizaremos una placa de doble cara simplificada:
+Para alojar los componentes en un formato horizontal (paisaje) amplio y cómodo, utilizaremos una placa de doble cara simplificada:
 
-![Placa Base Vacía V2 (Frente y Reverso)](img/cyberdeck_empty_shield_v2.png)
+![Placa Base Vacía V3 (Frente y Reverso)](img/cyberdeck_empty_shield_v3.png)
 
-### Distribución de la Placa Vacía V2:
+### Distribución de la Placa Vacía V3:
 *   **Cara Frontal (Top Layer):**
-    *   **Área de Pantalla (TFT_LCD):** Zócalo/footprint de pines para una pantalla TFT de 2.8" (TFT_CS, RST, RS/DC, MOSI, SCK, LED_A, VCC, GND). *Nota: No hay botones ni encoder rotativo en esta placa.*
+    *   **Área de Pantalla (TFT_LCD):** Zócalo/footprint de pines para una pantalla TFT de 2.8" orientada de forma **horizontal** (TFT_CS, RST, RS/DC, MOSI, SCK, LED_A, VCC, GND). *Nota: No hay botones ni encoder rotativo en esta placa.*
 *   **Cara Trasera (Bottom Layer):**
-    *   **Zócalo ESP32-S3 DevKitC-1 (Centro):** Dos filas de pines hembra para el microcontrolador central.
-    *   **Zócalos nRF24L01+ (Lado Derecho):** Footprints y conectores para dos módulos transceptores de radio apilados de forma vertical (nRF24L01+ #1 arriba y #2 abajo). *Nota: No hay socket de tarjeta MicroSD en la parte trasera.*
+    *   **Zócalo ESP32-S3 DevKitC-1 (Centro):** Dos filas de pines hembra para el microcontrolador central en medio de la placa.
+    *   **Zócalo nRF24L01+ #1 (Lado Izquierdo):** Footprint y conectores para un transceptor de radio nRF24L01+ ubicado a la **izquierda** de la placa.
+    *   **Zócalo nRF24L01+ #2 (Lado Derecho):** Footprint y conectores para el segundo transceptor de radio nRF24L01+ ubicado a la **derecha** de la placa.
+    *   *Nota: No hay socket de tarjeta MicroSD en la parte trasera.*
 
-## El Cyberdeck Ensamblado (PCB V2)
+## El Cyberdeck Ensamblado (PCB V3)
 
 Una vez soldados todos los componentes a la placa base, el Cyberdeck tiene la siguiente apariencia (Frente y Reverso):
 
-![Cyberdeck Ensamblado V2 (Frente y Reverso)](img/cyberdeck_assembled_v2.png)
+![Cyberdeck Ensamblado V3 (Frente y Reverso)](img/cyberdeck_assembled_v3.png)
 
 ---
 
@@ -46,18 +48,18 @@ A continuación se detalla el mapeo pin-a-pin entre el **ESP32-S3 DevKitC-1** y 
 | | RST | **GPIO 14** | Reset físico de la pantalla |
 | | VCC | 3.3V | Alimentación de 3.3V |
 | | GND | GND | Tierra común |
-| **nRF24L01+ #1 (Superior)** | SCK | **GPIO 12** | Reloj SPI compartido |
+| **nRF24L01+ #1 (Izquierdo)** | SCK | **GPIO 12** | Reloj SPI compartido |
 | | MOSI | **GPIO 11** | Salida de Datos SPI compartida |
 | | MISO | **GPIO 13** | Entrada de Datos SPI compartida |
-| | CE | **GPIO 4** | Chip Enable dedicado (nRF1) |
-| | CSN | **GPIO 5** | Chip Select Not dedicado (nRF1) |
+| | CE | **GPIO 4** | Chip Enable dedicado (nRF1 Izq) |
+| | CSN | **GPIO 5** | Chip Select Not dedicado (nRF1 Izq) |
 | | VCC | 3.3V | Alimentación exclusiva de 3.3V |
 | | GND | GND | Tierra común |
-| **nRF24L01+ #2 (Inferior)** | SCK | **GPIO 12** | Reloj SPI compartido |
+| **nRF24L01+ #2 (Derecho)** | SCK | **GPIO 12** | Reloj SPI compartido |
 | | MOSI | **GPIO 11** | Salida de Datos SPI compartida |
 | | MISO | **GPIO 13** | Entrada de Datos SPI compartida |
-| | CE | **GPIO 6** | Chip Enable dedicado (nRF2) |
-| | CSN | **GPIO 7** | Chip Select Not dedicado (nRF2) |
+| | CE | **GPIO 6** | Chip Enable dedicado (nRF2 Der) |
+| | CSN | **GPIO 7** | Chip Select Not dedicado (nRF2 Der) |
 | | VCC | 3.3V | Alimentación exclusiva de 3.3V |
 | | GND | GND | Tierra común |
 | **GPS NEO-6M** | TX | **GPIO 18** | Transmisión del GPS -> Recepción ESP32 |
@@ -69,8 +71,8 @@ A continuación se detalla el mapeo pin-a-pin entre el **ESP32-S3 DevKitC-1** y 
 | **Batería (ADC VBAT)** | VBAT (Sensado) | **GPIO 9** | Conexión al divisor resistivo (2.2kΩ / 1kΩ) |
 
 > [!IMPORTANT]
-> **Componentes Excluidos en V2:**
-> Siguiendo las instrucciones de diseño de la placa angosta, se han omitido los siguientes pines y componentes en el ruteo:
+> **Componentes Excluidos en V3:**
+> Siguiendo las instrucciones de diseño de la placa, se han omitido los siguientes pines y componentes en el ruteo:
 > - **Lector MicroSD** (originalmente en GPIOs 36/35/37/16) - *Removido físicamente del reverso.*
 > - **Botones Físicos** (originalmente en GPIOs 1/2/42/41) - *Removidos físicamente del frente.*
 > - **Encoder Rotativo** (originalmente en GPIOs 40/39/38) - *Removido físicamente del frente.*
@@ -94,10 +96,10 @@ graph TD
         G17[GPIO 17 / TX GPS]
         G18[GPIO 18 / RX GPS]
         G21[GPIO 21 / DC TFT]
-        G4[GPIO 4 / CE nRF1]
-        G5[GPIO 5 / CSN nRF1]
-        G6[GPIO 6 / CE nRF2]
-        G7[GPIO 7 / CSN nRF2]
+        G4[GPIO 4 / CE nRF1 Izq]
+        G5[GPIO 5 / CSN nRF1 Izq]
+        G6[GPIO 6 / CE nRF2 Der]
+        G7[GPIO 7 / CSN nRF2 Der]
     end
 
     subgraph TFT ST7789 2.8
@@ -108,7 +110,7 @@ graph TD
         TFT_RST[RST]
     end
 
-    subgraph nRF24L01 1["nRF24L01+ #1"]
+    subgraph nRF24L01 1["nRF24L01+ #1 (Izquierdo)"]
         RF1_SCK[SCK]
         RF1_MOSI[MOSI]
         RF1_MISO[MISO]
@@ -116,7 +118,7 @@ graph TD
         RF1_CSN[CSN]
     end
 
-    subgraph nRF24L01 2["nRF24L01+ #2"]
+    subgraph nRF24L01 2["nRF24L01+ #2 (Derecho)"]
         RF2_SCK[SCK]
         RF2_MOSI[MOSI]
         RF2_MISO[MISO]
