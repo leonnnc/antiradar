@@ -2,6 +2,15 @@
 
 Esta guía documentará el diseño y ensamblaje de la base (motherboard) del Cyberdeck paso a paso. Comenzamos con una placa base vacía (PCB) y añadiremos cada componente uno a uno.
 
+## Concepto de Diseño: Placa Portadora Pasiva (Shield)
+
+Esta placa base está diseñada bajo un concepto de **placa portadora pasiva (shield)**:
+1. **Sin Componentes Integrados:** La PCB no cuenta con circuitos integrados, microchips ni componentes activos montados de fábrica. Consiste puramente en pistas de cobre, zócalos de pines (headers) y pads de soldadura.
+2. **Modularidad Total:** Todos los componentes activos y periféricos (el ESP32-S3 DevKit, la Pantalla TFT, los módulos de radio nRF24L01+, el GPS y el Buzzer) son **módulos independientes y externos** que se adquieren por separado y se sueldan o insertan en los zócalos correspondientes de la placa base vacía.
+3. **Facilidad de Ensamblaje y Reemplazo:** Si algún módulo falla, puede ser desoldado o retirado de su zócalo sin comprometer el resto de la placa base.
+
+---
+
 ## La Placa Base Vacía (PCB V2)
 
 Para alojar los componentes en un formato angosto y compacto, utilizaremos una placa de doble cara simplificada:
