@@ -15,6 +15,12 @@ Para alojar los componentes en un formato angosto y compacto, utilizaremos una p
     *   **Zócalo ESP32-S3 DevKitC-1 (Centro):** Dos filas de pines hembra para el microcontrolador central.
     *   **Zócalos nRF24L01+ (Lado Derecho):** Footprints y conectores para dos módulos transceptores de radio apilados de forma vertical (nRF24L01+ #1 arriba y #2 abajo). *Nota: No hay socket de tarjeta MicroSD en la parte trasera.*
 
+## El Cyberdeck Ensamblado (PCB V2)
+
+Una vez soldados todos los componentes a la placa base, el Cyberdeck tiene la siguiente apariencia (Frente y Reverso):
+
+![Cyberdeck Ensamblado V2 (Frente y Reverso)](img/cyberdeck_assembled_v2.png)
+
 ---
 
 ## Tabla de Conexiones Completa
