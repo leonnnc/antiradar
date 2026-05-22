@@ -170,6 +170,17 @@ Analizador pasivo de saturacion WiFi por canal.
 - No intenta contrasenas.
 - Sirve para diagnosticar saturacion y elegir canales menos congestionados.
 
+### WIFI SNIFFER
+
+Escaneo pasivo de Probe Requests (solicitudes de sonda) y Beacons con rastreador de intensidad relativo (Radar).
+
+- Configura el hardware en modo promiscuo de Wi-Fi.
+- Realiza un barrido dinámico de canales del 1 al 13.
+- Muestra direcciones MAC de origen, tipo de paquete (PRB o BCN), nivel de señal (RSSI) y nombres de red (SSID) de los dispositivos cercanos.
+- Permite elegir un dispositivo objetivo pulsando `OK` sobre su dirección MAC.
+- Abre la pantalla de rastreo en tiempo real (**PROBE PULSE**), la cual calcula la distancia estimada en metros, muestra la tendencia (`ACERCÁNDOTE`, `ALEJÁNDOTE`, `ESTABLE`, `BUSCANDO...`) y grafica un historial de señal (RSSI).
+- No realiza desautenticaciones, ataques ni conexiones (receptor completamente pasivo/educativo).
+
 ### BLE DEVICE RADAR
 
 Radar pasivo de anuncios Bluetooth Low Energy cercanos.
@@ -343,6 +354,9 @@ Apps que puede abrir por Spotlight:
 - Facebook.
 - Configuracion.
 - Galeria / Fotos.
+- Correo.
+- Mapas.
+- App Store.
 
 Acciones iPhone:
 
