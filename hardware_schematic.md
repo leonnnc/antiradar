@@ -2,7 +2,7 @@
 
 Esta guía detalla los componentes necesarios, dónde comprarlos y cómo realizar las conexiones físicas para construir la placa del Cyberdeck.
 
-![Cyberdeck Hardware Connection Layout](/Users/leonnnc/.gemini/antigravity/brain/f3773808-f3b5-46e3-8c80-d5cd8ada7d28/cyberdeck_hardware_layout_1779436087683.png)
+![Cyberdeck Hardware Connection Layout](img/cyberdeck_hardware_layout.png)
 
 ---
 
@@ -11,7 +11,7 @@ Esta guía detalla los componentes necesarios, dónde comprarlos y cómo realiza
 | Componente | Especificación Técnica | Propósito en el Cyberdeck |
 | :--- | :--- | :--- |
 | **Placa de Desarrollo ESP32-S3** | ESP32-S3 DevKitC-1 o módulo ESP32-S3-WROOM-1 (con pines de GPIO libres de 1 a 42). | Cerebro del Cyberdeck, encargado de BLE, WiFi, procesamiento y UI. |
-| **Pantalla TFT ST7789** | IPS 2.0" o 2.4", resolución 240x320, interfaz SPI (sin pantalla táctil necesaria). | Interfaz gráfica de usuario y visualización de datos. |
+| **Pantalla TFT 2.8"** | ST7789 o ILI9341, resolución 240x320, interfaz SPI. | Interfaz gráfica de usuario y visualización de datos. |
 | **Módulos nRF24L01+ (x2)** | Módulo transceptor de 2.4 GHz (con o sin antena externa SMA). | Escaneo pasivo y transmisión en frecuencias de 2.4 GHz. |
 | **Módulo Lector MicroSD** | Lector MicroSD por bus SPI (compatible con 3.3V/5V). | Carga de base de datos de GPS y almacenamiento de capturas. |
 | **Módulo GPS NEO-6M** | Módulo receptor GPS con antena cerámica, interfaz UART. | Obtención de coordenadas geográficas en tiempo real. |
@@ -177,11 +177,20 @@ graph TD
 
 ---
 
-## 5. Diseño Sugerido de la PCB (Vista Frontal y Trasera)
+## 5. Diseño Sugerido de la Base / Motherboard (Formato Angosto y de Doble Cara)
 
-Para optimizar el tamaño físico del Cyberdeck y evitar interferencias electromagnéticas, te sugerimos una disposición de dos capas (Top y Bottom):
+Para conectar todos tus módulos de forma limpia y compacta, se sugiere diseñar una **Base/Motherboard Shield** con zócalos hembra usando ambas caras de la placa (Top y Bottom) para dar soporte a la pantalla de 2.8":
 
-![Diseño PCB Cyberdeck](/Users/leonnnc/.gemini/antigravity/brain/f3773808-f3b5-46e3-8c80-d5cd8ada7d28/improved_pcb_layout_1779477766453.png)
+![Diseño Base Cyberdeck (Frente y Reverso)](img/cyberdeck_back_shield.png)
+
+### Distribución Física de Doble Cara ("Al revés"):
+*   **Cara Frontal (Top Layer)**:
+    *   **Pantalla TFT de 2.8" (Arriba)**: Ocupa toda la mitad superior del frente de la placa.
+    *   **Pulsadores y Encoder (Abajo)**: 4 botones táctiles (UP, DOWN, LEFT/BACK, RIGHT/ENTER) y el encoder rotativo EC11 para la navegación se sitúan debajo de la pantalla.
+*   **Cara Trasera / Reverso (Bottom Layer - "Al revés")**:
+    *   **ESP32-S3 DevKit (Centro)**: Se monta sobre tiras de pines hembra en el centro/medio del reverso.
+    *   **Lector MicroSD (Abajo de la placa)**: Se ubica en la parte inferior del reverso, directamente debajo de la posición del ESP32-S3.
+    *   **Módulos nRF24L01+ (Lateral derecho)**: Se ordenan de forma vertical de abajo hacia arriba en el lado derecho del reverso. Sus antenas SMA quedan orientadas hacia arriba, despejando la zona de los conectores USB de la placa de desarrollo central.
 
 ### Reglas de Ruteado en tu Software de PCB (KiCad, EasyEDA, etc.):
 *   **Zona Despejada para las Antenas**: No coloques planos de cobre ni pistas de señal directamente debajo de la antena impresa en el PCB de los módulos nRF24L01+ ni de la antena cerámica del GPS. Deja esa sección libre en ambas capas.
